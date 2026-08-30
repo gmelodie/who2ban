@@ -24,8 +24,13 @@ pub fn start(app: Arc<App>) -> bool {
 
 fn run_backfill(app: &App) {
     let dirs = paths::replay_dirs(&app.config());
-    if let Err(e) = ingest::backfill(&app.db, &dirs, |p| app.emit("ingest", p)) {
-        tracing::warn!("backfill: {e}");
+    match ingest::backfill(&app.db, &dirs, |p| app.emit("ingest", p)) {
+        Ok(done) => tracing::info!(
+            parsed = done.done - done.failed,
+            failed = done.failed,
+            "backfill"
+        ),
+        Err(e) => tracing::warn!("backfill: {e}"),
     }
 }
 
@@ -40,7 +45,10 @@ fn run_watch(app: Arc<App>, handle: Handle) {
         let _entered = handle.enter();
         match event {
             WatchEvent::Replay(path) => match ingest::ingest_file(&app.db, &path) {
-                Ok(Some(_)) => app.emit("ingested", &path.to_string_lossy()),
+                Ok(Some(id)) => {
+                    tracing::info!(id, path = %path.display(), "replay ingested");
+                    app.emit("ingested", &path.to_string_lossy())
+                }
                 Ok(None) => {}
                 Err(e) => tracing::warn!("ingest {}: {e}", path.display()),
             },

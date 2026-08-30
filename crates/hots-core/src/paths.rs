@@ -5,18 +5,26 @@ use crate::config::Config;
 pub const BATTLELOBBY_NAME: &str = "replay.server.battlelobby";
 pub const TEMP_SUBDIR: &str = "Heroes of the Storm";
 
-/// Wine prefixes to try when the game runs through Lutris or Bottles, best first.
-const PREFIXES: [&str; 7] = [
-    "Games/heroes-of-the-storm",
-    "Games/battlenet",
-    "Games/battle-net",
-    "Games/blizzard",
+/// Folders that hold wine prefixes, either directly or one level down.
+const PREFIX_ROOTS: [&str; 5] = [
+    "",
+    "Games",
     ".wine",
     ".local/share/bottles/bottles",
     ".var/app/com.usebottles.bottles/data/bottles/bottles",
 ];
 
+/// Current wine puts the temp folder under AppData, older prefixes keep the short path.
+const TEMP_DIRS: [&str; 2] = ["AppData/Local/Temp", "Temp"];
+
 const DOC_DIRS: [&str; 2] = ["Documents", "My Documents"];
+
+/// Windows redirects Documents into OneDrive often enough to look in both.
+const HOME_DOCS: [&str; 3] = [
+    "Documents",
+    "OneDrive/Documents",
+    "OneDrive - Personal/Documents",
+];
 
 pub fn data_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("HOTS_DATA_DIR") {
@@ -44,9 +52,11 @@ pub fn temp_root(cfg: &Config) -> PathBuf {
     if native.is_dir() {
         return native;
     }
-    temps_of(named_prefix_users())
+    let home = dirs::home_dir();
+    home_temp_roots(home.as_deref())
         .into_iter()
-        .chain(wine_temp_roots(dirs::home_dir().as_deref()))
+        .chain(temps_of(named_prefix_users()))
+        .chain(wine_temp_roots(home.as_deref()))
         .next()
         .unwrap_or(native)
 }
@@ -60,17 +70,16 @@ pub fn replay_dirs(cfg: &Config) -> Vec<PathBuf> {
         return vec![PathBuf::from(dir)];
     }
 
-    let native = dirs::document_dir()
-        .map(|docs| multiplayer_dirs(&docs.join(TEMP_SUBDIR).join("Accounts")))
+    let home = dirs::home_dir();
+    let mut all = dirs::document_dir()
+        .map(|docs| accounts_under(&docs))
         .unwrap_or_default();
-    if !native.is_empty() {
-        return native;
-    }
-    let named = replays_of(named_prefix_users());
-    if !named.is_empty() {
-        return named;
-    }
-    wine_replay_dirs(dirs::home_dir().as_deref())
+    all.extend(home_replay_dirs(home.as_deref()));
+    all.extend(replays_of(named_prefix_users()));
+    all.extend(wine_replay_dirs(home.as_deref()));
+    all.sort();
+    all.dedup();
+    all
 }
 
 pub fn is_battlelobby(path: &Path) -> bool {
@@ -83,6 +92,24 @@ pub fn is_replay(path: &Path) -> bool {
         .is_some_and(|e| e.eq_ignore_ascii_case("StormReplay"))
 }
 
+/// The Documents of the machine itself, wherever Windows moved it.
+pub fn home_replay_dirs(home: Option<&Path>) -> Vec<PathBuf> {
+    let Some(home) = home else {
+        return Vec::new();
+    };
+    HOME_DOCS
+        .iter()
+        .flat_map(|docs| accounts_under(&home.join(docs)))
+        .collect()
+}
+
+pub fn home_temp_roots(home: Option<&Path>) -> Vec<PathBuf> {
+    match home {
+        Some(home) => temps_of(vec![home.to_path_buf()]),
+        None => Vec::new(),
+    }
+}
+
 pub fn wine_temp_roots(home: Option<&Path>) -> Vec<PathBuf> {
     temps_of(wine_users(home))
 }
@@ -93,8 +120,8 @@ pub fn wine_replay_dirs(home: Option<&Path>) -> Vec<PathBuf> {
 
 fn temps_of(users: Vec<PathBuf>) -> Vec<PathBuf> {
     users
-        .into_iter()
-        .map(|user| user.join("Temp").join(TEMP_SUBDIR))
+        .iter()
+        .flat_map(|user| TEMP_DIRS.map(|temp| user.join(temp).join(TEMP_SUBDIR)))
         .filter(|dir| dir.is_dir())
         .collect()
 }
@@ -103,8 +130,12 @@ fn replays_of(users: Vec<PathBuf>) -> Vec<PathBuf> {
     users
         .iter()
         .flat_map(|user| DOC_DIRS.map(|docs| user.join(docs)))
-        .flat_map(|docs| multiplayer_dirs(&docs.join(TEMP_SUBDIR).join("Accounts")))
+        .flat_map(|docs| accounts_under(&docs))
         .collect()
+}
+
+fn accounts_under(docs: &Path) -> Vec<PathBuf> {
+    multiplayer_dirs(&docs.join(TEMP_SUBDIR).join("Accounts"))
 }
 
 fn named_prefix_users() -> Vec<PathBuf> {
@@ -120,7 +151,7 @@ fn wine_users(home: Option<&Path>) -> Vec<PathBuf> {
     let Some(home) = home else {
         return Vec::new();
     };
-    users_in(PREFIXES.map(|dir| home.join(dir)).to_vec())
+    users_in(PREFIX_ROOTS.map(|dir| home.join(dir)).to_vec())
 }
 
 /// `drive_c/users/<name>` of every prefix, including the one a bottle nests one level down.

@@ -1,34 +1,10 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Source {
-    None,
-    Local,
-    Hp,
-    Both,
-}
-
-impl Source {
-    pub fn merge(self, other: Source) -> Source {
-        match (self, other) {
-            (Source::None, x) | (x, Source::None) => x,
-            (a, b) if a == b => a,
-            _ => Source::Both,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HeroRow {
     pub hero: String,
     pub games: u32,
     pub wins: u32,
-    pub local_games: u32,
-    pub local_wins: u32,
-    pub hp_games: u32,
-    pub hp_wins: u32,
-    pub source: Source,
 }
 
 impl HeroRow {
@@ -40,28 +16,15 @@ impl HeroRow {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum FetchState {
-    Fresh,
-    Stale,
-    Pending,
-    Missing,
-    Failed,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DraftPlayer {
     pub battletag: String,
-    pub region: u8,
     pub slot: u8,
     pub team: u8,
     pub enemy: bool,
-    pub mmr: Option<f64>,
     pub heroes: Vec<HeroRow>,
-    pub local_games: u32,
-    pub hp_state: FetchState,
-    pub error: Option<String>,
+    /// Games on record, which the shown heroes may not cover.
+    pub games: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

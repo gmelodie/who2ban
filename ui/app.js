@@ -47,61 +47,35 @@ function heroRow(h) {
   tr.className = `wr-${bucket(h)}`;
   tr.innerHTML = `<td class="hero">${escape(h.hero)}</td>
     <td class="num">${h.games}</td>
-    <td class="num">${rate}</td>
-    <td class="src ${h.source}">${h.source}</td>`;
+    <td class="num">${h.wins}</td>
+    <td class="num">${rate}</td>`;
   return tr;
-}
-
-function stateLabel(p) {
-  if (p.error) return escape(`failed: ${p.error}`);
-  return { fresh: "HP", stale: "HP stale", pending: "fetching…", missing: "local only", failed: "failed" }[p.hp_state];
 }
 
 function playerCard(p) {
   const card = document.createElement("article");
-  card.className = `card ${p.hp_state}`;
+  card.className = "card";
 
-  const mmr = p.mmr ? `${Math.round(p.mmr)} mmr` : "";
   const head = document.createElement("header");
   head.innerHTML = `<span class="tag">${escape(p.battletag)}</span>
-    <span class="mmr">${mmr}</span>
-    <span class="badge ${p.hp_state}">${stateLabel(p)}</span>`;
-  head.append(refreshButton(p));
+    <span class="games">${p.games} games</span>`;
   card.append(head);
 
   if (!p.heroes.length) {
     const none = document.createElement("p");
     none.className = "none";
-    none.textContent = p.hp_state === "pending" ? "…" : "no games on record";
+    none.textContent = "no games on record";
     card.append(none);
     return card;
   }
 
   const table = document.createElement("table");
-  table.innerHTML = "<thead><tr><th>hero</th><th>games</th><th>win</th><th>src</th></tr></thead>";
+  table.innerHTML = "<thead><tr><th>hero</th><th>games</th><th>won</th><th>win</th></tr></thead>";
   const body = document.createElement("tbody");
   sortHeroes(p.heroes).forEach((h) => body.append(heroRow(h)));
   table.append(body);
   card.append(table);
   return card;
-}
-
-function refreshButton(p) {
-  const button = document.createElement("button");
-  button.className = "refresh";
-  button.textContent = "↻";
-  button.onclick = async () => {
-    button.disabled = true;
-    try {
-      const body = { battletag: p.battletag, region: p.region };
-      replacePlayer(await api("/player/refresh", "POST", body));
-    } catch (e) {
-      showError(`${p.battletag}: ${e.message}`);
-    } finally {
-      button.disabled = false;
-    }
-  };
-  return button;
 }
 
 function render() {
@@ -115,14 +89,6 @@ function render() {
     ? state.draft.players
     : state.draft.players.filter((p) => p.enemy);
   shown.sort((a, b) => a.slot - b.slot).forEach((p) => box.append(playerCard(p)));
-}
-
-function replacePlayer(row) {
-  if (!state.draft) return;
-  const i = state.draft.players.findIndex((p) => p.battletag === row.battletag);
-  if (i < 0) return;
-  state.draft.players[i] = { ...state.draft.players[i], ...row };
-  render();
 }
 
 function showError(text) {
@@ -175,8 +141,7 @@ async function loadStatus() {
   const s = await api("/status");
   state.watching = s.watching;
   el("status").textContent =
-    `${s.matches} replays · ${s.failed} unreadable · ${s.battletag || "battletag unset"}` +
-    (s.has_api_key ? "" : " · no api key");
+    `${s.matches} replays · ${s.failed} unreadable · ${s.battletag || "battletag unset"}`;
 }
 
 // The server reading the folders makes every browser equal, so the page asks for nothing.
@@ -187,18 +152,27 @@ function showFolders() {
 
   const at = fs.connected();
   const can = fs.capability();
+  const hints = fs.hints();
+  const blocked = !!hints.tempBlocked;
+
   if (!can.ok) {
     el("banner").textContent = `${can.text} Or run the server on this machine, where it reads the folders itself.`;
     el("banner").hidden = false;
+  } else if (blocked && !at.temp) {
+    el("banner").textContent = hints.tempBlocked;
+    el("banner").hidden = false;
   }
-  el("pick-temp").disabled = !can.ok;
+
+  el("pick-temp").disabled = !can.ok || blocked;
   el("pick-replays").disabled = !can.ok;
-  el("manual").hidden = can.ok;
-  el("temp-state").textContent = at.temp ? "connected" : "not connected";
+  el("manual-replays-box").hidden = can.ok;
+  el("manual-lobby-box").hidden = can.ok && !blocked;
+  el("temp-state").textContent = at.temp ? "connected" : blocked ? "blocked by the browser" : "not connected";
   el("replays-state").textContent = at.replays ? "connected" : "not connected";
-  const hints = fs.hints();
   el("temp-hint").textContent = at.temp ? "" : hints.temp;
   el("replays-hint").textContent = at.replays ? "" : hints.replays;
+  el("copy-temp").hidden = at.temp || !hints.temp;
+  el("copy-replays").hidden = at.replays;
   el("how").textContent = at.temp && at.replays ? "" : hints.how;
   el("reconnect").hidden = !can.ok || (at.temp && at.replays);
 }
@@ -207,20 +181,16 @@ async function loadConfig() {
   const cfg = await api("/config");
   state.minGames = cfg.min_games_for_winrate;
   el("battletag").value = cfg.battletag || "";
-  el("apikey").value = cfg.hp_api_key || "";
-  el("gametype").value = cfg.hp_game_type;
-  el("ttl").value = cfg.hp_ttl_days;
   el("maxheroes").value = cfg.max_heroes;
+  el("mingames").value = cfg.min_games_for_winrate;
   el("allmodes").checked = cfg.local_all_modes;
 }
 
 async function save() {
   const cfg = await api("/config");
   cfg.battletag = el("battletag").value.trim() || null;
-  cfg.hp_api_key = el("apikey").value.trim() || null;
-  cfg.hp_game_type = el("gametype").value.trim();
-  cfg.hp_ttl_days = Number(el("ttl").value);
   cfg.max_heroes = Number(el("maxheroes").value);
+  cfg.min_games_for_winrate = Number(el("mingames").value);
   cfg.local_all_modes = el("allmodes").checked;
   try {
     await api("/config", "PUT", cfg);
@@ -238,9 +208,18 @@ function subscribe() {
     state.draft = JSON.parse(e.data);
     render();
   });
-  events.addEventListener("player", (e) => replacePlayer(JSON.parse(e.data)));
   events.addEventListener("ingested", loadStatus);
-  events.addEventListener("hp-error", (e) => showError(`heroes profile: ${JSON.parse(e.data)}`));
+  events.addEventListener("lobby-error", (e) => showError(`lobby: ${JSON.parse(e.data)}`));
+}
+
+async function copy(button, text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    button.textContent = "copied";
+  } catch {
+    button.textContent = "select it and copy";
+  }
+  setTimeout(() => (button.textContent = "copy"), 2000);
 }
 
 async function pick(key) {
@@ -264,6 +243,8 @@ async function main() {
   el("save").onclick = save;
   el("pick-temp").onclick = () => pick("temp");
   el("pick-replays").onclick = () => pick("replays");
+  el("copy-temp").onclick = () => copy(el("copy-temp"), fs.hints().temp);
+  el("copy-replays").onclick = () => copy(el("copy-replays"), fs.hints().replays);
   el("manual-replays").onchange = (e) => backfill(fs.fromFiles(e.target.files));
   el("manual-lobby").onchange = async (e) => {
     const [file] = e.target.files;

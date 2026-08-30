@@ -16,7 +16,6 @@ pub struct Status {
     pub matches: u32,
     pub failed: u32,
     pub battletag: Option<String>,
-    pub has_api_key: bool,
     pub replay_dirs: Vec<String>,
     pub temp_root: String,
     pub watching: bool,
@@ -61,18 +60,6 @@ impl App {
         *self.draft.lock().unwrap_or_else(|e| e.into_inner()) = Some(draft);
     }
 
-    pub fn replace_player(&self, row: &hots_core::DraftPlayer) {
-        let mut held = self.draft.lock().unwrap_or_else(|e| e.into_inner());
-        let Some(draft) = held.as_mut() else { return };
-        if let Some(slot) = draft
-            .players
-            .iter_mut()
-            .find(|p| p.battletag == row.battletag)
-        {
-            *slot = row.clone();
-        }
-    }
-
     /// A send with no listener is the normal case: nobody has the page open.
     pub fn emit(&self, kind: &'static str, data: &impl Serialize) {
         let Ok(text) = serde_json::to_string(data) else {
@@ -91,7 +78,6 @@ impl App {
             matches: self.db.match_count()?,
             failed: self.db.error_count()?,
             battletag: cfg.battletag.clone(),
-            has_api_key: cfg.hp_api_key.is_some(),
             replay_dirs: paths::replay_dirs(&cfg)
                 .iter()
                 .map(|p| p.display().to_string())

@@ -77,6 +77,7 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 .folders b { color: var(--text); font-weight: 500; }
 .folder { display: flex; align-items: center; gap: 8px; }
 .hint { color: var(--dim); font-family: ui-monospace, monospace; font-size: 12px; }
+.copy { padding: 1px 6px; font-size: 12px; }
 .manual { display: flex; gap: 12px; align-items: center; }
 .manual label { display: flex; gap: 4px; align-items: center; }
 .manual input { max-width: 190px; }
@@ -112,30 +113,15 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
   padding: 10px 12px;
 }
 
-.card.pending { opacity: 0.75; }
 .card header { border: 0; padding: 0 0 8px; gap: 8px; flex-wrap: wrap; }
 .tag { font-weight: 600; }
-.mmr { color: var(--dim); }
-
-.badge {
-  font-size: 11px;
-  padding: 1px 6px;
-  border-radius: 10px;
-  border: 1px solid var(--line);
-  color: var(--dim);
-}
-
-.badge.fresh { color: var(--hot); border-color: var(--hot); }
-.badge.stale { color: var(--warn); border-color: var(--warn); }
-.badge.failed { color: var(--cold); border-color: var(--cold); }
-.refresh { padding: 0 6px; }
+.games { color: var(--dim); }
 
 table { width: 100%; border-collapse: collapse; }
 th { text-align: left; font-weight: 400; color: var(--dim); font-size: 11px; }
 td, th { padding: 2px 4px; border-bottom: 1px solid var(--line); }
 .num { text-align: right; font-variant-numeric: tabular-nums; }
 .hero { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 130px; }
-.src { color: var(--dim); font-size: 11px; text-align: right; }
 .wr-hot .num:last-of-type { color: var(--hot); }
 .wr-cold .num:last-of-type { color: var(--cold); }
 .wr-thin td { color: var(--dim); }

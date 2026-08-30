@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use heroprotocol::Value;
+use heroprotocol::{Protocol, Value};
 
 use crate::model::{GameMode, Lobby, LobbyPlayer, MatchPlayer, MatchRecord, Toon};
 use crate::{Error, Result};
@@ -12,15 +12,17 @@ pub fn replay(path: &Path) -> Result<MatchRecord> {
 }
 
 pub fn replay_bytes(bytes: Vec<u8>) -> Result<MatchRecord> {
-    let raw = heroprotocol::Replay::new(heroprotocol::mpq::Archive::new(bytes)?)?;
-    let details = raw.details()?;
+    let archive = heroprotocol::mpq::Archive::new(bytes)?;
+    let base = base_build(&archive)?;
+    let protocol = protocol_for(base);
+
+    let details = protocol.decode_replay_details(&stream(&archive, "replay.details")?)?;
     let entries = details
         .get("m_playerList")
         .and_then(array)
         .ok_or_else(|| malformed("details has no m_playerList"))?;
 
-    let tags = raw
-        .archive()
+    let tags = archive
         .read_file(LOBBY_STREAM)?
         .map(|bytes| battletags(&bytes))
         .unwrap_or_default();
@@ -36,10 +38,41 @@ pub fn replay_bytes(bytes: Vec<u8>) -> Result<MatchRecord> {
     Ok(MatchRecord {
         players,
         map: text(&details, "m_title").unwrap_or_default(),
-        mode: mode_of(&raw),
+        mode: mode_of(protocol, &archive),
         played_at: unix_time(int(&details, "m_timeUTC").unwrap_or(0)),
-        build: raw.base_build(),
+        build: base,
     })
+}
+
+/// A build past the newest table decodes with the nearest older one, because the two
+/// streams this reads are self-describing.
+pub fn protocol_for(base: u32) -> &'static Protocol {
+    heroprotocol::versions::build_or_older(base)
+        .map(|(_, protocol)| protocol)
+        .unwrap_or_else(heroprotocol::latest)
+}
+
+pub fn is_exact_build(base: u32) -> bool {
+    heroprotocol::build(base).is_some()
+}
+
+fn base_build(archive: &heroprotocol::mpq::Archive) -> Result<u32> {
+    let user_data = archive
+        .user_data()
+        .ok_or_else(|| malformed("replay has no user data header"))?;
+    let header = heroprotocol::latest().decode_replay_header(&user_data.content)?;
+    header
+        .get("m_version")
+        .and_then(|v| v.get("m_baseBuild"))
+        .and_then(Value::as_i64)
+        .map(|build| build as u32)
+        .ok_or_else(|| malformed("header has no m_baseBuild"))
+}
+
+fn stream(archive: &heroprotocol::mpq::Archive, name: &str) -> Result<Vec<u8>> {
+    archive
+        .read_file(name)?
+        .ok_or_else(|| malformed(&format!("replay has no {name}")))
 }
 
 fn player(entry: &Value, battletag: String) -> Result<MatchPlayer> {
@@ -89,8 +122,10 @@ fn by_name(name: &str, tags: &[String]) -> Result<String> {
     }
 }
 
-fn mode_of(raw: &heroprotocol::Replay) -> GameMode {
-    let Ok(init) = raw.initdata() else {
+fn mode_of(protocol: &Protocol, archive: &heroprotocol::mpq::Archive) -> GameMode {
+    let Ok(init) = stream(archive, "replay.initData")
+        .and_then(|bytes| Ok(protocol.decode_replay_initdata(&bytes)?))
+    else {
         return GameMode::Unknown;
     };
     let Some(options) = init

@@ -110,3 +110,17 @@ fn reads_a_real_replay() {
     assert_eq!(record.players.iter().filter(|p| p.won).count(), 5);
     assert_eq!(record.players.iter().filter(|p| p.team == 0).count(), 5);
 }
+
+/// A build past the newest table must decode, not fail: their replays are always newer.
+#[test]
+fn a_new_build_falls_back_to_the_newest_protocol() {
+    use hots_parse::parse::{is_exact_build, protocol_for};
+
+    assert!(!is_exact_build(97_771), "97771 is not in the table");
+    protocol_for(97_771);
+    protocol_for(0);
+    assert!(
+        is_exact_build(59_239),
+        "the sample replay's build is in the table"
+    );
+}
