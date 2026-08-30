@@ -1,0 +1,61 @@
+name: hots-draft
+
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    expose: ["8731"]
+    volumes:
+      - data:/data
+
+  nginx:
+    image: nginx:1.29-alpine
+    restart: unless-stopped
+    depends_on: [app]
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN in .env}
+      BASIC_USER: ${BASIC_USER:?set BASIC_USER in .env}
+      BASIC_PASS: ${BASIC_PASS:?set BASIC_PASS in .env}
+    volumes:
+      - ./deploy/nginx.conf.template:/etc/nginx/nginx.conf.template:ro
+      - ./deploy/nginx-entrypoint.sh:/entrypoint.sh:ro
+      - certs:/etc/letsencrypt
+      - acme:/var/www/certbot
+    entrypoint: ["/bin/sh", "/entrypoint.sh"]
+
+  certbot:
+    image: certbot/certbot:latest
+    restart: unless-stopped
+    depends_on: [nginx]
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN in .env}
+      EMAIL: ${EMAIL:?set EMAIL in .env}
+      STAGING: ${STAGING:-0}
+    volumes:
+      - certs:/etc/letsencrypt
+      - acme:/var/www/certbot
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        staging=""
+        [ "$$STAGING" = "1" ] && staging="--staging"
+        while :; do
+          if [ ! -d "/etc/letsencrypt/live/$$DOMAIN" ]; then
+            echo "asking for a certificate for $$DOMAIN"
+            certbot certonly --webroot -w /var/www/certbot \
+              -d "$$DOMAIN" --email "$$EMAIL" \
+              --agree-tos --no-eff-email --non-interactive $$staging || true
+          else
+            certbot renew --webroot -w /var/www/certbot || true
+          fi
+          sleep 12h
+        done
+
+volumes:
+  data:
+  certs:
+  acme:

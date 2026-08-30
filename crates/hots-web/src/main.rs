@@ -43,7 +43,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             get(routes::get_config).put(routes::put_config),
         )
         .route("/api/status", get(routes::status))
-        .route("/api/draft", get(routes::get_draft).post(routes::post_draft))
+        .route(
+            "/api/draft",
+            get(routes::get_draft).post(routes::post_draft),
+        )
         .route("/api/player/refresh", post(routes::refresh_player))
         .route("/api/matches", post(routes::post_match))
         .route("/api/matches/known", get(routes::known_matches))
