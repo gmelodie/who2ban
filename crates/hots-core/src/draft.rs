@@ -4,7 +4,9 @@ use crate::config::Config;
 use crate::db::{Db, HpHero, LocalHero, now};
 use crate::error::Result;
 use crate::heroesprofile::HpClient;
-use crate::model::{Draft, DraftPlayer, FetchState, HeroRow, Lobby, Source};
+use hots_parse::Lobby;
+
+use crate::model::{Draft, DraftPlayer, FetchState, HeroRow, Source};
 
 pub fn build(db: &Db, cfg: &Config, lobby: &Lobby) -> Result<Draft> {
     let me = match &cfg.battletag {

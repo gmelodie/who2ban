@@ -2,13 +2,17 @@ use std::path::Path;
 
 use heroprotocol::Value;
 
-use crate::error::{Error, Result};
 use crate::model::{GameMode, Lobby, LobbyPlayer, MatchPlayer, MatchRecord, Toon};
+use crate::{Error, Result};
 
 const LOBBY_STREAM: &str = "replay.server.battlelobby";
 
 pub fn replay(path: &Path) -> Result<MatchRecord> {
-    let raw = heroprotocol::Replay::open(path)?;
+    replay_bytes(std::fs::read(path)?)
+}
+
+pub fn replay_bytes(bytes: Vec<u8>) -> Result<MatchRecord> {
+    let raw = heroprotocol::Replay::new(heroprotocol::mpq::Archive::new(bytes)?)?;
     let details = raw.details()?;
     let entries = details
         .get("m_playerList")

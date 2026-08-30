@@ -100,3 +100,16 @@ td, th { padding: 2px 4px; border-bottom: 1px solid var(--line); }
 .none { color: var(--dim); margin: 4px 0 0; }
 
 footer { padding: 0 16px 16px; color: var(--cold); font-family: ui-monospace, monospace; }
+
+.folders {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--line);
+  color: var(--dim);
+  font-size: 13px;
+}
+
+.folders b { color: var(--text); font-weight: 500; }
+.progress { margin-left: auto; }

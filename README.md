@@ -1,39 +1,52 @@
 # HotS Draft Helper
 
-Shows the hero pool of the five enemies while the Storm League lobby forms, so you can ban on evidence. It reads the files the game writes: no screenshots, no overlay, no memory reads.
+Shows the hero pool of the five enemies while the Storm League lobby forms, so you can ban on evidence. A web app: the page reads the game's own files, so there are no screenshots, no overlay and no memory reads.
+
+The page does the reading and the parsing. Only the ten battletags reach the server.
 
 ## Running
 
 ```sh
-cargo test --workspace          # 21 tests
-cargo run -p hots-cli -- config # resolved paths and counts
-cargo run -p hots-cli -- backfill
-cargo run -p hots-cli -- lobby sample-lobby.json
-cargo run -p hots-cli -- watch
-cargo tauri dev                 # needs a webview toolchain
+make serve                      # builds the wasm parser, then serves on 127.0.0.1:8731
 ```
 
-`hots lobby` reads a `.json` lobby as well as the binary file, so the whole pipeline runs with no game installed.
+Open `http://localhost:8731` in Chrome or Edge, then point it at two folders:
+
+| Button | Folder |
+|---|---|
+| temp folder | `%TEMP%\Heroes of the Storm` |
+| replays | `Documents\Heroes of the Storm\Accounts\<id>\<id>\Replays\Multiplayer` |
+
+The browser remembers both, and asks for one click to hand the permission back on a later visit. Everything else runs by itself: the page polls the temp folder every 400 ms, and it parses any replay the server has not stored yet.
+
+```sh
+make test                       # 21 tests
+make check                      # fmt, clippy, clippy for wasm32
+make dist                       # dist/hots-web and dist/hots_parse.wasm
+```
+
+The two files of `dist` go anywhere together, and `HOTS_ADDR` moves the port.
 
 ## Layout
 
 | Path | What it holds |
 |---|---|
-| `crates/hots-core` | Parsing, database, replay ingest, watchers, Heroes Profile client, draft assembly. |
-| `crates/hots-cli` | `hots`, a headless driver for the core. |
-| `src-tauri` | Desktop shell: commands, events, watcher supervision. |
-| `ui` | Static frontend, no bundler. |
+| `crates/hots-parse` | Replay and battlelobby parsing. Builds for the host and for `wasm32`. |
+| `crates/hots-core` | Database, Heroes Profile client, draft assembly, folder watchers for the CLI. |
+| `crates/hots-cli` | `hots`, a headless driver that reads the folders from the machine it runs on. |
+| `crates/hots-web` | The server: sqlite, Heroes Profile, an SSE stream, and the frontend baked in. |
+| `ui` | Three static files and no bundler. |
 
-`src-tauri` is its own cargo workspace, so `cargo test` at the root never needs the GTK and WebKit system libraries.
-
-[rs-heroprotocol](https://github.com/gmelodie/rs-heroprotocol) reads the MPQ archive and decodes the protocol streams. `hots-core::parse` keeps what this tool needs, which is the players, the heroes, the result, the map and the game mode, and adds the battlelobby scan the crate does not cover.
+[rs-heroprotocol](https://github.com/gmelodie/rs-heroprotocol) reads the MPQ archive and decodes the protocol streams. `hots-parse` keeps what this tool needs, which is the players, the heroes, the result, the map and the game mode, and adds the battlelobby scan the crate does not cover. It reaches the browser as a 590 KB `wasm32` module with a raw ABI, so there is no wasm-bindgen and no npm anywhere in the build.
 
 ## Data flow
 
-1. The client writes `%TEMP%\Heroes of the Storm\TempWriteReplayP1\replay.server.battlelobby` when the lobby forms. A stat loop notices it inside 400 ms. It stats rather than watches because the client deletes that folder on exit, which kills a watch.
-2. `draft::build` splits the ten battletags into the two teams and answers from SQLite alone. The frontend paints the enemy rows before the first ban.
-3. Every enemy whose Heroes Profile rows are missing or older than the TTL gets a request of its own. Each answer replaces one card as it lands.
-4. When the match ends the client writes a `.StormReplay`. `notify` sees it, the file is parsed once it stops growing, and the local aggregate grows.
+1. The client writes `%TEMP%\Heroes of the Storm\TempWriteReplayP1\replay.server.battlelobby` when the lobby forms. The page reads it inside 400 ms and parses it in wasm.
+2. The page posts the ten battletags to `POST /api/draft`. The server answers from SQLite alone, and the enemy rows paint before the first ban.
+3. Every enemy whose Heroes Profile rows are missing or older than the TTL gets a request of its own. Each answer arrives over SSE and replaces one card.
+4. When the match ends the client writes a `.StormReplay`. The page parses it in wasm and posts the result of the match, never the file.
+
+The page polls rather than watches because the client deletes its temp folder on exit, which kills a directory watch.
 
 ## Decisions
 
@@ -41,10 +54,11 @@ cargo tauri dev                 # needs a webview toolchain
 - **Ranking**: games says what they pick, winrate says what they are good at, so the card carries both and the header sorts by either. A hero under `min_games_for_winrate` shows `-` instead of a meaningless rate.
 - **Local scope**: every mode by default. Quick Match still reveals a hero pool. Set `local_all_modes = false` for the ranked queues alone, which counts Hero League and Team League too, since Storm League absorbed both.
 - **Merge rule**: per hero, the side with more games wins the headline number. Both counts stay on the row, and the `src` column says which sides answered.
+- **What leaves the machine**: battletags, hero names and counts. No file, and no path.
 
 ## Config
 
-`~/.local/share/hots-draft/config.toml` on Linux, `%APPDATA%\hots-draft\config.toml` on Windows. `HOTS_DATA_DIR` overrides the folder.
+`~/.local/share/hots-draft/config.toml` on Linux, `%APPDATA%\hots-draft\config.toml` on Windows. `HOTS_DATA_DIR` overrides the folder, and the settings panel writes the same file.
 
 ```toml
 battletag = "Name#1234"
@@ -53,11 +67,20 @@ hp_game_type = "Storm League"
 hp_ttl_days = 7
 max_heroes = 8
 local_all_modes = true
-# replay_dir = "..."   # skips the Documents search
-# temp_dir = "..."     # skips %TEMP%
 ```
 
-`HOTS_REPLAY_DIR` and `HOTS_TEMP_DIR` override the two folders for a test run.
+## The command line
+
+`hots` reads the folders from the machine it runs on, which is the way to backfill years of replays without a browser tab.
+
+```sh
+cargo run -p hots-cli -- config
+cargo run -p hots-cli -- backfill
+cargo run -p hots-cli -- lobby sample-lobby.json
+cargo run -p hots-cli -- watch
+```
+
+It shares the database and the config with the server. `HOTS_REPLAY_DIR` and `HOTS_TEMP_DIR` override the two folders.
 
 ## The battlelobby scan
 
@@ -69,8 +92,8 @@ Point `HOTS_TEST_REPLAY` at a `.StormReplay` and `cargo test` checks the parser 
 
 ## Known gaps
 
+- The File System Access API is Chrome and Edge only. Firefox and Safari can show the page, but they cannot read the folders, so the draft screen stays empty there. The CLI covers those machines.
+- The server has no authentication. It binds `127.0.0.1` for that reason. Put a reverse proxy and a password in front before `HOTS_ADDR` points anywhere else.
 - Nothing checks the Heroes Profile response shape against the live API. The reader is tolerant on purpose. It walks the JSON, takes any object with win counts as a hero, and accepts numbers written as strings. Change `heroes_from_json` if the real response disagrees.
-- `src-tauri` compiles nowhere yet. The machine it was written on has no WebKitGTK, so it needs a `cargo check` on a real desktop.
 - The game mode comes from `m_ammId`. A real file confirms the Quick Match id. The published tables supply the other nine, and an unknown id stores as `Unknown`.
 - The api key sits in plain text in `config.toml`.
-- The icons under `src-tauri/icons` are flat blue placeholders. Run `cargo tauri icon path/to/art.png` to replace the set.

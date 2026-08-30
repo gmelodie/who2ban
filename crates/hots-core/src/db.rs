@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Mutex;
 
-use crate::model::MatchRecord;
+use hots_parse::MatchRecord;
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::error::Result;

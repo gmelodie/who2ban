@@ -19,11 +19,11 @@ pub fn scan_dirs(dirs: &[PathBuf]) -> Vec<PathBuf> {
 
 pub fn ingest_file(db: &Db, path: &Path) -> Result<Option<i64>> {
     let key = path.to_string_lossy().to_string();
-    match crate::parse::replay(path) {
+    match hots_parse::replay(path) {
         Ok(replay) => db.record_replay(&key, &replay),
         Err(e) => {
             db.record_replay_error(&key, &e.to_string())?;
-            Err(e)
+            Err(e.into())
         }
     }
 }

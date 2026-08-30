@@ -6,7 +6,7 @@ license.workspace = true
 description = "Replay ingest, lobby detection, local stats and Heroes Profile cache"
 
 [dependencies]
-heroprotocol = { workspace = true }
+hots-parse = { workspace = true }
 
 dirs = { workspace = true }
 notify = { workspace = true }
