@@ -5,6 +5,8 @@ services:
     build: .
     restart: unless-stopped
     expose: ["8731"]
+    environment:
+      RUST_LOG: ${RUST_LOG:-hots_web=info,hots_core=info}
     volumes:
       - data:/data
 

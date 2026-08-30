@@ -5,10 +5,8 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
-use hots_core::draft::{self, needs_refresh};
-use hots_core::heroesprofile::HpClient;
-use hots_core::model::FetchState;
-use hots_core::{Config, Draft, DraftPlayer, Lobby, MatchRecord};
+use hots_core::draft;
+use hots_core::{Config, Draft, Lobby, MatchRecord};
 use serde::{Deserialize, Serialize};
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::{Stream, StreamExt};
@@ -56,108 +54,23 @@ pub async fn post_draft(State(app): State<Arc<App>>, Json(lobby): Json<Lobby>) -
 
 pub fn accept_lobby(app: &Arc<App>, lobby: Lobby) -> hots_core::Result<Draft> {
     let cfg = app.config();
-    let mut view = draft::build(&app.db, &cfg, &lobby)?;
+    tracing::info!(
+        region = lobby.region,
+        players = lobby.players.len(),
+        "lobby"
+    );
 
-    let hp = match HpClient::new(&cfg) {
-        Ok(hp) => Some(Arc::new(hp)),
-        Err(e) => {
-            app.emit("hp-error", &e.to_string());
-            None
-        }
-    };
-
-    let show_all = view.my_team.is_none();
-    let wanted: Vec<(String, u8)> = match &hp {
-        None => Vec::new(),
-        Some(_) => view
-            .players
-            .iter_mut()
-            .filter(|p| p.enemy || show_all)
-            .filter(|p| needs_refresh(p.hp_state))
-            .map(|p| {
-                p.hp_state = FetchState::Pending;
-                (p.battletag.clone(), p.region)
-            })
-            .collect(),
-    };
+    let view = draft::build(&app.db, &cfg, &lobby)?;
+    tracing::info!(
+        my_team = ?view.my_team,
+        enemies = view.enemies().count(),
+        known = view.enemies().filter(|p| p.games > 0).count(),
+        "draft"
+    );
 
     app.set_draft(view.clone());
     app.emit("lobby", &view);
-    if let Some(hp) = hp {
-        fetch_all(app, hp, wanted);
-    }
     Ok(view)
-}
-
-fn fetch_all(app: &Arc<App>, hp: Arc<HpClient>, wanted: Vec<(String, u8)>) {
-    for (battletag, region) in wanted {
-        let app = app.clone();
-        let hp = hp.clone();
-        tokio::spawn(async move {
-            let row = refresh_one(&app, &hp, &battletag, region).await;
-            app.emit("player", &row);
-        });
-    }
-}
-
-/// The slot, the team and the enemy flag come from the stored draft, never from the caller.
-async fn refresh_one(app: &App, hp: &HpClient, battletag: &str, region: u8) -> DraftPlayer {
-    let cfg = app.config();
-    let known = app
-        .draft()
-        .and_then(|d| d.players.iter().find(|p| p.battletag == battletag).cloned());
-    let (slot, team, enemy) = known
-        .as_ref()
-        .map(|p| (p.slot, p.team, p.enemy))
-        .unwrap_or((0, 0, true));
-
-    let fetched = draft::refresh(&app.db, hp, &cfg, battletag, region)
-        .await
-        .and_then(|()| draft::player_row(&app.db, &cfg, battletag, region, slot, team, enemy));
-
-    match fetched {
-        Ok(row) => {
-            app.replace_player(&row);
-            row
-        }
-        Err(e) => {
-            let mut row = known.unwrap_or_else(|| blank(battletag, region, slot, team, enemy));
-            row.hp_state = FetchState::Failed;
-            row.error = Some(e.to_string());
-            row
-        }
-    }
-}
-
-fn blank(battletag: &str, region: u8, slot: u8, team: u8, enemy: bool) -> DraftPlayer {
-    DraftPlayer {
-        battletag: battletag.to_string(),
-        region,
-        slot,
-        team,
-        enemy,
-        mmr: None,
-        heroes: Vec::new(),
-        local_games: 0,
-        hp_state: FetchState::Failed,
-        error: None,
-    }
-}
-
-#[derive(Deserialize)]
-pub struct RefreshBody {
-    pub battletag: String,
-    pub region: u8,
-}
-
-pub async fn refresh_player(
-    State(app): State<Arc<App>>,
-    Json(body): Json<RefreshBody>,
-) -> Reply<DraftPlayer> {
-    let hp = HpClient::new(&app.config())?;
-    Ok(Json(
-        refresh_one(&app, &hp, &body.battletag, body.region).await,
-    ))
 }
 
 #[derive(Deserialize)]
@@ -176,7 +89,16 @@ pub async fn post_match(State(app): State<Arc<App>>, Json(body): Json<MatchBody>
     let stored = app.db.record_replay(&body.key, &body.record)?.is_some();
     let matches = app.db.match_count()?;
     if stored {
+        tracing::info!(
+            key = %body.key,
+            map = %body.record.map,
+            mode = body.record.mode.as_str(),
+            build = body.record.build,
+            "match stored"
+        );
         app.emit("ingested", &body.key);
+    } else {
+        tracing::debug!(key = %body.key, "match already stored");
     }
     Ok(Json(Stored { stored, matches }))
 }

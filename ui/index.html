@@ -27,16 +27,20 @@
         <span>temp folder <b id="temp-state">not connected</b></span>
         <button id="pick-temp" type="button">choose</button>
         <code id="temp-hint" class="hint"></code>
+        <button id="copy-temp" class="copy" type="button" title="copy the path">copy</button>
       </span>
       <span class="folder">
         <span>replays <b id="replays-state">not connected</b></span>
         <button id="pick-replays" type="button">choose</button>
         <code id="replays-hint" class="hint"></code>
+        <button id="copy-replays" class="copy" type="button" title="copy the path">copy</button>
       </span>
       <span id="how" class="hint"></span>
       <button id="reconnect" type="button" hidden>reconnect</button>
-      <span id="manual" class="manual" hidden>
+      <span id="manual-replays-box" class="manual" hidden>
         <label>replay folder <input id="manual-replays" type="file" webkitdirectory multiple /></label>
+      </span>
+      <span id="manual-lobby-box" class="manual" hidden>
         <label>battlelobby <input id="manual-lobby" type="file" /></label>
       </span>
       <span id="progress" class="progress"></span>
@@ -44,15 +48,14 @@
 
     <section id="settings" hidden>
       <label>battletag <input id="battletag" placeholder="Name#1234" /></label>
-      <label>api key <input id="apikey" type="password" /></label>
-      <label>game type <input id="gametype" /></label>
-      <label>cache days <input id="ttl" type="number" min="1" /></label>
       <label>heroes shown <input id="maxheroes" type="number" min="1" /></label>
+      <label>min games for a winrate <input id="mingames" type="number" min="1" /></label>
       <label class="check"><input id="allmodes" type="checkbox" /> count every mode locally</label>
       <button id="save" type="button">save</button>
       <p class="paths">Choose <code>%TEMP%\Heroes of the Storm</code> and the
       <code>Replays\Multiplayer</code> folder of your account. The browser keeps both
-      permissions, and the files are read and parsed here: only battletags reach the server.</p>
+      permissions, and the files are read and parsed here. Every number on the screen comes from
+      the replays this database has parsed, and from nowhere else.</p>
     </section>
 
     <main id="players" class="players">

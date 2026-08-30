@@ -30,11 +30,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .init();
 
     let cfg = Config::load()?;
+    tracing::info!(config = %Config::path().display(), db = %paths::db_path().display(), "starting");
+    tracing::info!(
+        battletag = cfg.battletag.as_deref().unwrap_or("unset"),
+        all_modes = cfg.local_all_modes,
+        heroes_shown = cfg.max_heroes,
+        "config"
+    );
     let app = Arc::new(App::new(Db::open(&paths::db_path())?, cfg));
+    tracing::info!(
+        matches = app.db.match_count().unwrap_or(0),
+        failed = app.db.error_count().unwrap_or(0),
+        "database"
+    );
 
+    let module = wasm_path();
+    tracing::info!(path = %module.display(), found = module.exists(), "parser module");
+
+    let cfg = app.config();
+    tracing::info!(
+        temp_root = %paths::temp_root(&cfg).display(),
+        replay_dirs = paths::replay_dirs(&cfg).len(),
+        "game folders"
+    );
+    for dir in paths::replay_dirs(&cfg) {
+        tracing::info!(path = %dir.display(), "replay folder");
+    }
     if watcher::start(app.clone()) {
         app.set_watching(true);
-        println!("reading the game folders from this machine");
+        tracing::info!("reading the game folders from this machine");
+    } else {
+        tracing::info!("no game folders here, the page has to read them");
     }
 
     let router = Router::new()
@@ -53,7 +79,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "/api/draft",
             get(routes::get_draft).post(routes::post_draft),
         )
-        .route("/api/player/refresh", post(routes::refresh_player))
         .route("/api/matches", post(routes::post_match))
         .route("/api/matches/known", get(routes::known_matches))
         .route("/api/events", get(routes::events))
@@ -61,7 +86,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let addr = std::env::var("HOTS_ADDR").unwrap_or_else(|_| "127.0.0.1:8731".to_string());
     let listener = tokio::net::TcpListener::bind(&addr).await?;
-    println!("http://{addr}");
+    tracing::info!("listening on http://{addr}");
     axum::serve(listener, router)
         .with_graceful_shutdown(async {
             let _ = tokio::signal::ctrl_c().await;

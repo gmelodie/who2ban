@@ -1,7 +1,5 @@
-use hots_core::db::{Db, HpHero, LocalHero};
-use hots_core::heroesprofile::{heroes_from_json, mmr_from_json};
-use hots_core::{Config, Source, draft};
-use hots_core::{GameMode, Lobby, LobbyPlayer, MatchPlayer, MatchRecord, Toon};
+use hots_core::db::{Db, LocalHero};
+use hots_core::{Config, GameMode, Lobby, LobbyPlayer, MatchPlayer, MatchRecord, Toon, draft};
 
 fn toon(region: u8, id: u64) -> Toon {
     Toon {
@@ -68,56 +66,6 @@ fn aggregates_local_heroes_and_filters_by_mode() {
     let ranked = db.local_heroes("Foe#1", false).unwrap();
     assert_eq!(ranked.len(), 1);
     assert_eq!(ranked[0].hero, "Raynor");
-}
-
-#[test]
-fn merges_local_and_hp_rows() {
-    let local = vec![LocalHero {
-        hero: "Raynor".into(),
-        games: 2,
-        wins: 1,
-    }];
-    let hp = vec![
-        HpHero {
-            hero: "Raynor".into(),
-            games: 40,
-            wins: 22,
-            mmr: Some(2400.0),
-        },
-        HpHero {
-            hero: "Jaina".into(),
-            games: 10,
-            wins: 5,
-            mmr: None,
-        },
-    ];
-
-    let rows = draft::merge_heroes(&local, &hp, 8);
-    assert_eq!(rows[0].hero, "Raynor");
-    assert_eq!(rows[0].source, Source::Both);
-    assert_eq!((rows[0].games, rows[0].wins), (40, 22));
-    assert_eq!(rows[0].local_games, 2);
-    assert_eq!(rows[1].source, Source::Hp);
-    assert_eq!(draft::merge_heroes(&local, &hp, 1).len(), 1);
-}
-
-#[test]
-fn keeps_local_rows_when_hp_is_thinner() {
-    let local = vec![LocalHero {
-        hero: "Raynor".into(),
-        games: 9,
-        wins: 5,
-    }];
-    let hp = vec![HpHero {
-        hero: "Raynor".into(),
-        games: 2,
-        wins: 0,
-        mmr: None,
-    }];
-
-    let rows = draft::merge_heroes(&local, &hp, 8);
-    assert_eq!((rows[0].games, rows[0].wins), (9, 5));
-    assert_eq!(rows[0].winrate(), Some(5.0 / 9.0));
 }
 
 fn lobby() -> Lobby {
@@ -187,123 +135,21 @@ fn marks_every_player_when_the_lobby_has_no_self() {
 }
 
 #[test]
-fn caches_hp_rows_and_reports_freshness() {
-    let db = Db::open_memory().unwrap();
-    let cfg = Config::default();
-
-    let before = draft::player_row(&db, &cfg, "Foe#1", 1, 0, 0, true).unwrap();
-    assert_eq!(before.hp_state, hots_core::FetchState::Missing);
-    assert!(draft::needs_refresh(before.hp_state));
-
-    let heroes = vec![HpHero {
-        hero: "Jaina".into(),
-        games: 30,
-        wins: 18,
-        mmr: Some(2600.0),
-    }];
-    db.replace_hp_heroes("Foe#1", &cfg.hp_game_type, &heroes, Some(2555.0))
-        .unwrap();
-
-    let after = draft::player_row(&db, &cfg, "Foe#1", 1, 0, 0, true).unwrap();
-    assert_eq!(after.hp_state, hots_core::FetchState::Fresh);
-    assert_eq!(after.mmr, Some(2555.0));
-    assert_eq!(after.heroes[0].hp_games, 30);
-    assert!(!draft::needs_refresh(after.hp_state));
-}
-
-#[test]
-fn replacing_hp_rows_drops_the_old_ones() {
-    let db = Db::open_memory().unwrap();
-    let one = vec![HpHero {
-        hero: "Jaina".into(),
-        games: 30,
-        wins: 18,
-        mmr: None,
-    }];
-    let two = vec![HpHero {
-        hero: "Raynor".into(),
-        games: 5,
-        wins: 1,
-        mmr: None,
-    }];
-
-    db.replace_hp_heroes("Foe#1", "Storm League", &one, None)
-        .unwrap();
-    db.replace_hp_heroes("Foe#1", "Storm League", &two, None)
-        .unwrap();
-
-    let rows = db.hp_heroes("Foe#1", "Storm League").unwrap();
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].hero, "Raynor");
-}
-
-#[test]
-fn reads_hero_rows_out_of_a_nested_response() {
-    let body = serde_json::json!({
-        "Foe#1234": {
-            "Storm League": {
-                "Jaina":  {"wins": 10, "losses": 5, "games_played": 15, "win_rate": 66.7, "mmr": 2600},
-                "Raynor": {"wins": "3", "losses": "1", "win_rate": "75"}
-            }
-        }
-    });
-
-    let rows = heroes_from_json(&body);
-    assert_eq!(rows.len(), 2);
-    assert_eq!(rows[0].hero, "Jaina");
-    assert_eq!((rows[0].games, rows[0].wins), (15, 10));
-    assert_eq!(rows[0].mmr, Some(2600.0));
-    assert_eq!(
-        (rows[1].hero.as_str(), rows[1].games, rows[1].wins),
-        ("Raynor", 4, 3)
-    );
-}
-
-#[test]
-fn reads_hero_rows_out_of_an_array_response() {
-    let body = serde_json::json!([
-        {"hero": "Muradin", "games_played": 8, "win_rate": 50},
-        {"hero_name": "Li Li", "wins": 2, "losses": 2}
-    ]);
-
-    let rows = heroes_from_json(&body);
-    assert_eq!(rows.len(), 2);
-    assert_eq!(
-        (rows[0].hero.as_str(), rows[0].games, rows[0].wins),
-        ("Muradin", 8, 4)
-    );
-    assert_eq!(rows[1].hero, "Li Li");
-}
-
-#[test]
-fn skips_rows_with_no_games() {
-    let body = serde_json::json!({"Jaina": {"wins": 0, "losses": 0}, "note": "none"});
-    assert!(heroes_from_json(&body).is_empty());
-}
-
-#[test]
-fn finds_the_mmr_at_any_depth() {
-    let body = serde_json::json!({"Foe#1": {"Storm League": {"mmr": "2450.5"}}});
-    assert_eq!(mmr_from_json(&body), Some(2450.5));
-    assert_eq!(mmr_from_json(&serde_json::json!({})), None);
-}
-
-#[test]
 fn round_trips_the_config() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.toml");
     let cfg = Config {
         battletag: Some("Me#1234".into()),
-        hp_api_key: Some("key".into()),
-        hp_ttl_days: 3,
+        max_heroes: 4,
+        local_all_modes: false,
         ..Config::default()
     };
 
     cfg.save_to(&path).unwrap();
     let back = Config::load_from(&path).unwrap();
     assert_eq!(back.battletag.as_deref(), Some("Me#1234"));
-    assert_eq!(back.ttl_secs(), 3 * 86_400);
-    assert_eq!(back.api_key().unwrap(), "key");
+    assert_eq!(back.max_heroes, 4);
+    assert!(!back.local_all_modes);
     assert!(
         Config::load_from(&dir.path().join("missing.toml"))
             .unwrap()
@@ -357,6 +203,39 @@ fn finds_the_folders_of_a_lutris_prefix() {
     assert!(replays[0].ends_with("1-Hero-1-1234567/Replays/Multiplayer"));
 }
 
+/// The layout of a real box: a Lutris prefix under ~/Games plus a bare one named by hand.
+#[test]
+fn finds_both_prefixes_of_a_split_install() {
+    use hots_core::paths::{wine_replay_dirs, wine_temp_roots};
+
+    let home = tempfile::tempdir().unwrap();
+    let lutris = home.path().join("Games/battlenet/drive_c/users/steamuser");
+    let bare = home.path().join("wine32/drive_c/users/steamuser");
+    std::fs::create_dir_all(
+        lutris.join("AppData/Local/Temp/Heroes of the Storm/TempWriteReplayP1"),
+    )
+    .unwrap();
+    for account in ["2-Hero-1-11944033", "98-Hero-1-687994"] {
+        std::fs::create_dir_all(lutris.join(format!(
+            "Documents/Heroes of the Storm/Accounts/77009925/{account}/Replays/Multiplayer"
+        )))
+        .unwrap();
+    }
+    std::fs::create_dir_all(bare.join(
+        "Documents/Heroes of the Storm/Accounts/77009925/1-Hero-1-168611/Replays/Multiplayer",
+    ))
+    .unwrap();
+
+    let temps = wine_temp_roots(Some(home.path()));
+    assert_eq!(temps.len(), 1);
+    assert!(temps[0].ends_with("AppData/Local/Temp/Heroes of the Storm"));
+
+    let replays = wine_replay_dirs(Some(home.path()));
+    assert_eq!(replays.len(), 3, "every prefix contributes its history");
+    assert!(replays.iter().any(|p| p.starts_with(&lutris)));
+    assert!(replays.iter().any(|p| p.starts_with(&bare)));
+}
+
 #[test]
 fn finds_the_folders_of_a_bottle() {
     use hots_core::paths::wine_temp_roots;
@@ -371,10 +250,81 @@ fn finds_the_folders_of_a_bottle() {
     assert!(temps[0].ends_with("users/steamuser/Temp/Heroes of the Storm"));
 }
 
+/// Windows: Documents lands in OneDrive on many boxes, and the game may have used both.
+#[test]
+fn finds_documents_on_either_side_of_a_onedrive_move() {
+    use hots_core::paths::{home_replay_dirs, home_temp_roots};
+
+    let home = tempfile::tempdir().unwrap();
+    for docs in ["Documents", "OneDrive/Documents"] {
+        std::fs::create_dir_all(home.path().join(format!(
+            "{docs}/Heroes of the Storm/Accounts/77009925/1-Hero-1-168611/Replays/Multiplayer"
+        )))
+        .unwrap();
+    }
+    std::fs::create_dir_all(home.path().join("AppData/Local/Temp/Heroes of the Storm")).unwrap();
+
+    let replays = home_replay_dirs(Some(home.path()));
+    assert_eq!(replays.len(), 2);
+    assert!(
+        replays
+            .iter()
+            .any(|p| p.starts_with(home.path().join("OneDrive")))
+    );
+
+    let temps = home_temp_roots(Some(home.path()));
+    assert_eq!(temps.len(), 1);
+    assert!(temps[0].ends_with("AppData/Local/Temp/Heroes of the Storm"));
+}
+
 #[test]
 fn finds_nothing_without_a_prefix() {
     let home = tempfile::tempdir().unwrap();
     assert!(hots_core::paths::wine_temp_roots(Some(home.path())).is_empty());
     assert!(hots_core::paths::wine_replay_dirs(Some(home.path())).is_empty());
+    assert!(hots_core::paths::home_replay_dirs(Some(home.path())).is_empty());
+    assert!(hots_core::paths::home_temp_roots(Some(home.path())).is_empty());
     assert!(hots_core::paths::wine_temp_roots(None).is_empty());
+}
+
+#[test]
+fn ranks_the_most_played_hero_first() {
+    let local = vec![
+        LocalHero {
+            hero: "Jaina".into(),
+            games: 3,
+            wins: 3,
+        },
+        LocalHero {
+            hero: "Raynor".into(),
+            games: 9,
+            wins: 4,
+        },
+    ];
+
+    let rows = draft::hero_rows(local.clone(), 8);
+    assert_eq!(rows[0].hero, "Raynor");
+    assert_eq!((rows[0].games, rows[0].wins), (9, 4));
+    assert_eq!(rows[0].winrate(), Some(4.0 / 9.0));
+    assert_eq!(draft::hero_rows(local, 1).len(), 1);
+}
+
+#[test]
+fn counts_every_stored_game_of_a_player() {
+    let db = Db::open_memory().unwrap();
+    let cfg = Config::default();
+    db.record_replay(
+        "1.StormReplay",
+        &replay(GameMode::StormLeague, &[("Foe#1", "Raynor", 1, true)]),
+    )
+    .unwrap();
+
+    let row = draft::player_row(&db, &cfg, "Foe#1", 5, 1, true).unwrap();
+    assert_eq!(row.games, 1);
+    assert_eq!(row.heroes.len(), 1);
+    assert!(row.enemy);
+
+    let unknown = draft::player_row(&db, &cfg, "Nobody#9", 0, 0, false).unwrap();
+    assert_eq!(unknown.games, 0);
+    assert!(unknown.heroes.is_empty());
 }

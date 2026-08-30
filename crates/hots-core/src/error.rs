@@ -8,12 +8,8 @@ pub enum Error {
     Parser(#[from] hots_parse::Error),
     #[error("watcher: {0}")]
     Watch(#[from] notify::Error),
-    #[error("http: {0}")]
-    Http(#[from] reqwest::Error),
     #[error("config: {0}")]
     Config(String),
-    #[error("heroes profile: {0}")]
-    HeroesProfile(String),
     #[error("{0}")]
     Other(String),
 }

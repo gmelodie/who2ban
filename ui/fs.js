@@ -80,30 +80,46 @@ export async function reconnect() {
 export async function pick(key) {
   const can = capability();
   if (!can.ok) throw new Error(can.text);
-  const handle = await window.showDirectoryPicker({
-    id: `hots-${key}`,
-    mode: "read",
-    startIn: handles[key] || handles.replays || (key === "replays" ? "documents" : undefined),
-  });
+  const handle = await window
+    .showDirectoryPicker({
+      id: `hots-${key}`,
+      mode: "read",
+      startIn: handles[key] || handles.replays || (key === "replays" ? "documents" : undefined),
+    })
+    .catch(refuse);
   await remember(key, handle);
   return handle.name;
 }
 
+// Each path is one a folder dialog reaches and one that exists with the game closed.
+// The browser blocks a whole list of folders, AppData among them, and says so vaguely.
+function refuse(e) {
+  if (e.name === "AbortError") throw e;
+  const blocked = e.name === "SecurityError" || /system files|not allowed/i.test(e.message);
+  throw blocked ? new Error(hints().tempBlocked || e.message) : e;
+}
+
 const HINTS = {
   windows: {
-    temp: "%TEMP%\\Heroes of the Storm",
-    replays: "Documents\\Heroes of the Storm\\Accounts\\<id>\\<id>\\Replays\\Multiplayer",
-    how: "Paste the path into the name box of the dialog.",
+    temp: "",
+    tempBlocked:
+      "Windows keeps the temp folder inside AppData, and the browser refuses every folder in there:"
+      + " it answers that the folder contains system files. Run the server on this machine with"
+      + " `make serve` and it reads the folder directly, or load a battlelobby by hand below.",
+    replays: "%USERPROFILE%\\Documents\\Heroes of the Storm",
+    how: "Copy the path, paste it into the File name box of the dialog, press enter, then Select Folder.",
   },
   linux: {
-    temp: "~/Games/heroes-of-the-storm/drive_c/users/$USER/Temp/Heroes of the Storm",
-    replays: "~/Games/heroes-of-the-storm/drive_c/users/$USER/Documents/Heroes of the Storm/Accounts/<id>/<id>/Replays/Multiplayer",
-    how: "That is the Lutris prefix. Press ctrl-l in the dialog to type a path.",
+    temp: "~/Games/battlenet/drive_c/users/steamuser/AppData/Local/Temp",
+    tempBlocked: "",
+    replays: "~/Games/battlenet/drive_c/users/steamuser/Documents/Heroes of the Storm",
+    how: "Copy a path, press ctrl-l in the dialog, paste it, press enter. Your prefix may sit elsewhere under ~/Games.",
   },
   mac: {
-    temp: "the Temp folder of the wine prefix",
-    replays: "Documents/Heroes of the Storm/Accounts/<id>/<id>/Replays/Multiplayer",
-    how: "Press shift-cmd-g in the dialog to type a path.",
+    temp: "~/Library/Caches/TemporaryItems",
+    tempBlocked: "",
+    replays: "~/Documents/Heroes of the Storm",
+    how: "Copy a path, press shift-cmd-g in the dialog, paste it, press enter.",
   },
 };
 
@@ -144,16 +160,23 @@ async function bytesOf(file) {
   return new Uint8Array(await file.arrayBuffer());
 }
 
-// Both sources answer the same shape, so the backfill has one path.
+// Any folder above the replays will do, so nobody has to find Replays/Multiplayer.
 export async function listReplays() {
   if (!handles.replays) return [];
   const out = [];
-  for await (const [name, handle] of handles.replays.entries()) {
+  await collect(handles.replays, out, 6);
+  return out.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+async function collect(dir, out, depth) {
+  if (depth === 0) return;
+  for await (const [name, handle] of dir.entries()) {
     if (handle.kind === "file" && isReplay(name)) {
       out.push({ name, read: async () => bytesOf(await handle.getFile()) });
+    } else if (handle.kind === "directory") {
+      await collect(handle, out, depth - 1);
     }
   }
-  return out.sort((a, b) => a.name.localeCompare(b.name));
 }
 
 export function fromFiles(files) {
