@@ -105,7 +105,14 @@ fn reads_a_real_replay() {
     assert!(record.build > 0);
     assert!(!record.map.is_empty());
     assert!(record.played_at > 1_400_000_000);
-    assert!(record.players.iter().all(|p| p.battletag.contains('#')));
+    assert!(record.players.iter().all(|p| !p.name.is_empty()));
+    assert!(
+        record
+            .players
+            .iter()
+            .all(|p| p.battletag.as_deref().is_some_and(|t| t.contains('#'))),
+        "the sample replay carries a readable battlelobby"
+    );
     assert!(record.players.iter().all(|p| !p.hero.is_empty()));
     assert_eq!(record.players.iter().filter(|p| p.won).count(), 5);
     assert_eq!(record.players.iter().filter(|p| p.team == 0).count(), 5);

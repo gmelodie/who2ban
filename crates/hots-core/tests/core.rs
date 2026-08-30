@@ -15,7 +15,8 @@ fn replay(mode: GameMode, picks: &[(&str, &str, u8, bool)]) -> MatchRecord {
             .iter()
             .enumerate()
             .map(|(i, (tag, hero, team, won))| MatchPlayer {
-                battletag: tag.to_string(),
+                name: tag.split('#').next().unwrap().to_string(),
+                battletag: Some(tag.to_string()),
                 hero: hero.to_string(),
                 toon: toon(1, i as u64),
                 team: *team,
@@ -89,7 +90,7 @@ fn splits_the_lobby_into_teams() {
         ..Config::default()
     };
 
-    let view = draft::build(&db, &cfg, &lobby()).unwrap();
+    let view = draft::build(&db, &cfg, &lobby(), None).unwrap();
     assert_eq!(view.my_team, Some(1));
     assert_eq!(view.enemies().count(), 5);
     assert!(view.enemies().all(|p| p.team == 0));
@@ -115,7 +116,7 @@ fn falls_back_to_the_most_seen_battletag() {
     )
     .unwrap();
 
-    let view = draft::build(&db, &Config::default(), &lobby()).unwrap();
+    let view = draft::build(&db, &Config::default(), &lobby(), None).unwrap();
     assert_eq!(view.my_team, Some(0));
     assert!(view.enemies().all(|p| p.team == 1));
 }
@@ -128,7 +129,7 @@ fn marks_every_player_when_the_lobby_has_no_self() {
         ..Config::default()
     };
 
-    let view = draft::build(&db, &cfg, &lobby()).unwrap();
+    let view = draft::build(&db, &cfg, &lobby(), None).unwrap();
     assert_eq!(view.my_team, None);
     assert_eq!(view.enemies().count(), 0);
     assert_eq!(view.players.len(), 10);
@@ -327,4 +328,94 @@ fn counts_every_stored_game_of_a_player() {
     let unknown = draft::player_row(&db, &cfg, "Nobody#9", 0, 0, false).unwrap();
     assert_eq!(unknown.games, 0);
     assert!(unknown.heroes.is_empty());
+}
+
+/// The same database serves several people, so who is asking travels with the request.
+#[test]
+fn each_browser_says_who_it_is() {
+    let db = Db::open_memory().unwrap();
+    let cfg = Config::default();
+
+    let mine = draft::build(&db, &cfg, &lobby(), Some("P7#1007")).unwrap();
+    assert_eq!(mine.my_team, Some(1));
+
+    let theirs = draft::build(&db, &cfg, &lobby(), Some("P2#1002")).unwrap();
+    assert_eq!(theirs.my_team, Some(0));
+    assert!(theirs.enemies().all(|p| p.team == 1));
+}
+
+/// A replay whose battlelobby would not scan still counts, under the short name.
+#[test]
+fn falls_back_to_the_short_name() {
+    let db = Db::open_memory().unwrap();
+    let mut record = replay(GameMode::StormLeague, &[("Foe#1234", "Raynor", 1, true)]);
+    record.players[0].battletag = None;
+    db.record_replay("1.StormReplay", &record).unwrap();
+
+    let by_tag = db.local_heroes("Foe#1234", true).unwrap();
+    assert_eq!(by_tag.len(), 1, "a lobby battletag finds the nameless row");
+    assert_eq!(by_tag[0].hero, "Raynor");
+
+    assert!(db.local_heroes("Other#1", true).unwrap().is_empty());
+}
+
+#[test]
+fn an_exact_battletag_wins_over_the_name() {
+    let db = Db::open_memory().unwrap();
+    db.record_replay(
+        "1.StormReplay",
+        &replay(GameMode::StormLeague, &[("Foe#1111", "Jaina", 1, true)]),
+    )
+    .unwrap();
+
+    assert_eq!(db.local_heroes("Foe#1111", true).unwrap().len(), 1);
+    assert!(
+        db.local_heroes("Foe#2222", true).unwrap().is_empty(),
+        "a stored battletag is not matched by name"
+    );
+}
+
+/// With the game closed the temp folder is gone, so `Temp` itself has to be enough.
+#[test]
+fn finds_the_temp_folder_of_a_closed_game() {
+    use hots_core::paths::{temp_beside, wine_temp_roots};
+
+    let home = tempfile::tempdir().unwrap();
+    let user = home.path().join("Games/battlenet/drive_c/users/steamuser");
+    std::fs::create_dir_all(user.join("AppData/Local/Temp")).unwrap();
+    let replays =
+        user.join("Documents/Heroes of the Storm/Accounts/77009925/1-Hero-1-1/Replays/Multiplayer");
+    std::fs::create_dir_all(&replays).unwrap();
+
+    let beside = temp_beside(&replays).unwrap();
+    assert_eq!(beside, user.join("AppData/Local/Temp/Heroes of the Storm"));
+    assert!(!beside.exists(), "the game has not created it yet");
+
+    let found = wine_temp_roots(Some(home.path()));
+    assert_eq!(found.first(), Some(&beside));
+}
+
+#[test]
+fn prefers_a_temp_folder_that_is_already_there() {
+    use hots_core::paths::wine_temp_roots;
+
+    let home = tempfile::tempdir().unwrap();
+    let user = home.path().join("Games/battlenet/drive_c/users/steamuser");
+    std::fs::create_dir_all(user.join("AppData/Local/Temp")).unwrap();
+    std::fs::create_dir_all(user.join("Temp/Heroes of the Storm")).unwrap();
+
+    let found = wine_temp_roots(Some(home.path()));
+    assert_eq!(found.first(), Some(&user.join("Temp/Heroes of the Storm")));
+    assert_eq!(found.len(), 2, "the empty one stays as a second chance");
+}
+
+#[test]
+fn ignores_a_replay_folder_outside_a_prefix() {
+    use hots_core::paths::temp_beside;
+    assert!(
+        temp_beside(std::path::Path::new(
+            "/home/me/Documents/Heroes of the Storm"
+        ))
+        .is_none()
+    );
 }

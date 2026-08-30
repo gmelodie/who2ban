@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use std::path::Path;
+
 use hots_core::watch::{self, WatchEvent};
 use hots_core::{ingest, parse, paths};
 use tokio::runtime::Handle;
@@ -10,8 +12,9 @@ use crate::state::App;
 /// Starts only when the game folders sit on this machine, which is what a browser without the File System Access API needs.
 pub fn start(app: Arc<App>) -> bool {
     let cfg = app.config();
-    let dirs = paths::replay_dirs(&cfg);
-    if dirs.is_empty() && !paths::temp_root(&cfg).exists() {
+    let replays = paths::replay_dirs(&cfg).iter().any(|dir| dir.is_dir());
+    let temp = paths::temp_root(&cfg);
+    if !replays && !temp.exists() && !temp.parent().is_some_and(Path::exists) {
         return false;
     }
 
@@ -38,7 +41,10 @@ fn run_watch(app: Arc<App>, handle: Handle) {
     let (tx, rx) = std::sync::mpsc::channel();
     let _watchers = match watch::start(&app.config(), tx) {
         Ok(watchers) => watchers,
-        Err(e) => return tracing::error!("watch: {e}"),
+        Err(e) => {
+            app.set_watch_error(e.to_string());
+            return tracing::error!("watch: {e}");
+        }
     };
 
     while let Ok(event) = rx.recv() {
@@ -54,7 +60,7 @@ fn run_watch(app: Arc<App>, handle: Handle) {
             },
             WatchEvent::Lobby(bytes) => match parse::battlelobby(&bytes) {
                 Ok(lobby) => {
-                    if let Err(e) = routes::accept_lobby(&app, lobby) {
+                    if let Err(e) = routes::accept_lobby(&app, lobby, None) {
                         app.emit("lobby-error", &e.to_string());
                     }
                 }

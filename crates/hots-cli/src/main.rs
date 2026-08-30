@@ -27,6 +27,8 @@ enum Cmd {
     Player { battletag: String },
     /// Read a battlelobby file and print the draft
     Lobby { path: Option<PathBuf> },
+    /// Report what the battletag scan sees in a replay or a battlelobby
+    Scan { path: PathBuf },
     /// Ingest new replays and print each lobby as it forms
     Watch,
 }
@@ -55,6 +57,7 @@ fn main() -> Result<()> {
         }
         Cmd::Player { battletag } => player(&db, &cfg, &battletag)?,
         Cmd::Lobby { path } => lobby(&db, &cfg, path)?,
+        Cmd::Scan { path } => scan(&path)?,
         Cmd::Watch => run_watch(&db, &cfg)?,
     }
     Ok(())
@@ -98,6 +101,59 @@ fn backfill(db: &Db, cfg: &Config) -> Result<()> {
     Ok(())
 }
 
+/// Prints the framing around each discriminator, which is what a new build changes.
+fn scan(path: &std::path::Path) -> Result<()> {
+    let raw = std::fs::read(path).with_context(|| format!("read {}", path.display()))?;
+    let bytes = match hots_core::parse::lobby_stream(raw.clone()) {
+        Ok(stream) => {
+            println!("battlelobby stream: {} bytes", stream.len());
+            stream
+        }
+        Err(e) => {
+            println!("not a replay archive ({e}), reading the file as a battlelobby");
+            raw
+        }
+    };
+
+    match hots_core::parse::battlelobby(&bytes) {
+        Ok(lobby) => println!(
+            "region {} | {} battletags",
+            lobby.region,
+            lobby.players.len()
+        ),
+        Err(e) => println!("scan: {e}"),
+    }
+
+    let marks: Vec<usize> = bytes
+        .iter()
+        .enumerate()
+        .filter(|(_, b)| **b == b'#')
+        .map(|(i, _)| i)
+        .collect();
+    println!("{} '#' bytes in the stream, last ten:", marks.len());
+    for at in marks.iter().rev().take(10).rev() {
+        let from = at.saturating_sub(20);
+        let to = (at + 12).min(bytes.len());
+        println!("  {at:#08x} {}", dump(&bytes[from..to]));
+    }
+    Ok(())
+}
+
+fn dump(window: &[u8]) -> String {
+    let hex: Vec<String> = window.iter().map(|b| format!("{b:02x}")).collect();
+    let text: String = window
+        .iter()
+        .map(|b| {
+            if b.is_ascii_graphic() {
+                *b as char
+            } else {
+                '.'
+            }
+        })
+        .collect();
+    format!("{}  |{text}|", hex.join(" "))
+}
+
 fn player(db: &Db, cfg: &Config, battletag: &str) -> Result<()> {
     print_player(&draft::player_row(db, cfg, battletag, 0, 0, false)?, cfg);
     Ok(())
@@ -121,7 +177,7 @@ fn show_lobby(db: &Db, cfg: &Config, bytes: &[u8], json: bool) -> Result<()> {
     } else {
         hots_core::parse::battlelobby(bytes)?
     };
-    let view = draft::build(db, cfg, &parsed)?;
+    let view = draft::build(db, cfg, &parsed, None)?;
     let show_all = view.my_team.is_none();
     println!("region {} | my team {:?}", view.region, view.my_team);
     for row in view.players.iter().filter(|p| p.enemy || show_all) {

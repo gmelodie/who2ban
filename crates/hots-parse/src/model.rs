@@ -74,11 +74,22 @@ pub struct Lobby {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MatchPlayer {
-    pub battletag: String,
+    /// Always present. The battlelobby carries the discriminator, details does not.
+    pub name: String,
+    pub battletag: Option<String>,
     pub hero: String,
     pub toon: Toon,
     pub team: u8,
     pub won: bool,
+}
+
+impl MatchPlayer {
+    pub fn handle(&self) -> String {
+        format!(
+            "{}-Hero-{}-{}",
+            self.toon.region, self.toon.realm, self.toon.id
+        )
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

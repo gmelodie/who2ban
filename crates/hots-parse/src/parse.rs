@@ -11,6 +11,12 @@ pub fn replay(path: &Path) -> Result<MatchRecord> {
     replay_bytes(std::fs::read(path)?)
 }
 
+/// The battlelobby of a finished match, which is the same stream a live lobby writes.
+pub fn lobby_stream(bytes: Vec<u8>) -> Result<Vec<u8>> {
+    let archive = heroprotocol::mpq::Archive::new(bytes)?;
+    stream(&archive, LOBBY_STREAM)
+}
+
 pub fn replay_bytes(bytes: Vec<u8>) -> Result<MatchRecord> {
     let archive = heroprotocol::mpq::Archive::new(bytes)?;
     let base = base_build(&archive)?;
@@ -27,7 +33,7 @@ pub fn replay_bytes(bytes: Vec<u8>) -> Result<MatchRecord> {
         .map(|bytes| battletags(&bytes))
         .unwrap_or_default();
     let names: Vec<String> = entries.iter().filter_map(|e| text(e, "m_name")).collect();
-    let tags = join_battletags(&names, tags)?;
+    let tags = join_battletags(&names, tags);
 
     let players = entries
         .iter()
@@ -75,12 +81,13 @@ fn stream(archive: &heroprotocol::mpq::Archive, name: &str) -> Result<Vec<u8>> {
         .ok_or_else(|| malformed(&format!("replay has no {name}")))
 }
 
-fn player(entry: &Value, battletag: String) -> Result<MatchPlayer> {
+fn player(entry: &Value, battletag: Option<String>) -> Result<MatchPlayer> {
     let toon = entry
         .get("m_toon")
         .ok_or_else(|| malformed("player has no m_toon"))?;
 
     Ok(MatchPlayer {
+        name: text(entry, "m_name").unwrap_or_default(),
         battletag,
         hero: text(entry, "m_hero").unwrap_or_default(),
         toon: Toon {
@@ -93,32 +100,29 @@ fn player(entry: &Value, battletag: String) -> Result<MatchPlayer> {
     })
 }
 
-/// The lobby lists its players in slot order, which is the order of `m_playerList`.
-fn join_battletags(names: &[String], tags: Vec<String>) -> Result<Vec<String>> {
-    if tags.len() != names.len() {
-        return Err(malformed(&format!(
-            "{} battletags for {} players",
-            tags.len(),
-            names.len()
-        )));
-    }
-    if names
-        .iter()
-        .zip(&tags)
-        .all(|(name, tag)| tag.starts_with(name.as_str()) && tag[name.len()..].starts_with('#'))
+/// A scan that comes up short costs the discriminator, never the replay: the short
+/// name and the toon of `m_playerList` identify a player well enough on their own.
+fn join_battletags(names: &[String], tags: Vec<String>) -> Vec<Option<String>> {
+    if tags.len() == names.len()
+        && names
+            .iter()
+            .zip(&tags)
+            .all(|(name, tag)| tags_name(tag) == name)
     {
-        return Ok(tags);
+        return tags.into_iter().map(Some).collect();
     }
     names.iter().map(|name| by_name(name, &tags)).collect()
 }
 
-fn by_name(name: &str, tags: &[String]) -> Result<String> {
-    let mut hits = tags
-        .iter()
-        .filter(|tag| tag.starts_with(name) && tag[name.len()..].starts_with('#'));
+fn tags_name(tag: &str) -> &str {
+    tag.split_once('#').map_or(tag, |(name, _)| name)
+}
+
+fn by_name(name: &str, tags: &[String]) -> Option<String> {
+    let mut hits = tags.iter().filter(|tag| tags_name(tag) == name);
     match (hits.next(), hits.next()) {
-        (Some(tag), None) => Ok(tag.clone()),
-        _ => Err(malformed(&format!("no single battletag for {name}"))),
+        (Some(tag), None) => Some(tag.clone()),
+        _ => None,
     }
 }
 
@@ -170,45 +174,58 @@ pub fn battlelobby(bytes: &[u8]) -> Result<Lobby> {
     })
 }
 
-/// The undocumented stream yields its battletags to a scan for a length that agrees with the string behind it.
+/// Battletags in file order, which is slot order. The stream is undocumented, so the
+/// scan anchors on the `#` and keeps a name whose length the byte in front agrees with.
 fn battletags(bytes: &[u8]) -> Vec<String> {
     let mut out = Vec::new();
-    let mut i = 0;
-    while i + 1 < bytes.len() {
-        match battletag_at(bytes, i) {
-            Some(tag) => {
-                i += 1 + tag.len();
-                out.push(tag);
-            }
-            None => i += 1,
+    let mut taken = 0;
+    for (hash, _) in bytes.iter().enumerate().filter(|(_, b)| **b == b'#') {
+        if hash < taken {
+            continue;
+        }
+        if let Some((start, tag)) = tag_around(bytes, hash) {
+            taken = start + tag.len();
+            out.push(tag);
         }
     }
     out
 }
 
-fn battletag_at(bytes: &[u8], at: usize) -> Option<String> {
-    let header = bytes[at];
-    if header & 1 == 0 {
-        return None;
-    }
-    let len = (header >> 1) as usize;
-    if !(5..=48).contains(&len) {
-        return None;
-    }
+/// The length is written as a vint, whose encoding has moved between builds.
+fn encodes(header: u8, len: usize) -> bool {
+    let len = len as u8;
+    header == (len << 1) | 1 || header == len << 1 || header == len
+}
 
-    let end = at + 1 + len;
-    let text = std::str::from_utf8(bytes.get(at + 1..end)?).ok()?;
-    if bytes.get(end).is_some_and(u8::is_ascii_digit) {
+fn tag_around(bytes: &[u8], hash: usize) -> Option<(usize, String)> {
+    let digits = bytes[hash + 1..]
+        .iter()
+        .take(9)
+        .take_while(|b| b.is_ascii_digit())
+        .count();
+    if !(3..=8).contains(&digits) {
         return None;
     }
+    let end = hash + 1 + digits;
 
-    let (name, number) = text.split_once('#')?;
-    let named = (2..=24).contains(&name.chars().count())
-        && name
+    for name_len in 2..=24usize {
+        let start = hash.checked_sub(name_len)?;
+        if start == 0 {
+            break;
+        }
+        if !encodes(bytes[start - 1], end - start) {
+            continue;
+        }
+        let text = std::str::from_utf8(bytes.get(start..end)?).ok()?;
+        let (name, _) = text.split_once('#')?;
+        if name
             .chars()
-            .all(|c| !c.is_control() && c != ':' && c != '#');
-    let numbered = (3..=8).contains(&number.len()) && number.bytes().all(|b| b.is_ascii_digit());
-    (named && numbered).then(|| text.to_string())
+            .all(|c| !c.is_control() && c != ':' && c != '#')
+        {
+            return Some((start, text.to_string()));
+        }
+    }
+    None
 }
 
 /// The map dependencies name the gateway the game ran on.

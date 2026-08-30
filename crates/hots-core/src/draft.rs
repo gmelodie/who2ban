@@ -5,9 +5,10 @@ use crate::db::{Db, LocalHero};
 use crate::error::Result;
 use crate::model::{Draft, DraftPlayer, HeroRow};
 
-pub fn build(db: &Db, cfg: &Config, lobby: &Lobby) -> Result<Draft> {
-    let me = match &cfg.battletag {
-        Some(tag) => Some(tag.clone()),
+/// `me` comes from the browser that asked, so one server serves several people.
+pub fn build(db: &Db, cfg: &Config, lobby: &Lobby, me: Option<&str>) -> Result<Draft> {
+    let me = match me.map(str::to_string).or_else(|| cfg.battletag.clone()) {
+        Some(tag) => Some(tag),
         None => db.likely_self()?,
     };
     let my_team = me.as_deref().and_then(|me| team_of(lobby, me));
@@ -25,11 +26,18 @@ pub fn build(db: &Db, cfg: &Config, lobby: &Lobby) -> Result<Draft> {
     })
 }
 
-fn team_of(lobby: &Lobby, battletag: &str) -> Option<u8> {
+/// The stored name may carry no discriminator, so a name on its own still finds a seat.
+fn team_of(lobby: &Lobby, me: &str) -> Option<u8> {
+    let name = me.split_once('#').map_or(me, |(n, _)| n);
     lobby
         .players
         .iter()
-        .find(|p| p.battletag.eq_ignore_ascii_case(battletag))
+        .find(|p| {
+            p.battletag.eq_ignore_ascii_case(me)
+                || p.battletag
+                    .split_once('#')
+                    .is_some_and(|(n, _)| n.eq_ignore_ascii_case(name))
+        })
         .map(|p| p.team)
 }
 

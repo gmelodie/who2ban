@@ -2,7 +2,16 @@ import * as fs from "./fs.js";
 import * as wasm from "./wasm.js";
 
 const el = (id) => document.getElementById(id);
-const state = { draft: null, sort: "games", minGames: 3, busy: false, watching: false };
+const state = {
+  draft: null,
+  sort: "games",
+  minGames: 3,
+  busy: false,
+  watching: false,
+  step: localStorage.getItem("hots.step") || "lobby",
+  status: {},
+  battletag: localStorage.getItem("hots.battletag") || "",
+};
 
 async function api(path, method = "GET", body) {
   const res = await fetch(`/api${path}`, {
@@ -88,7 +97,33 @@ function render() {
   const shown = state.draft.my_team === null
     ? state.draft.players
     : state.draft.players.filter((p) => p.enemy);
+  if (state.draft.my_team === null) {
+    showError("Your battletag is not in this lobby, so every player is shown.");
+  }
   shown.sort((a, b) => a.slot - b.slot).forEach((p) => box.append(playerCard(p)));
+}
+
+function ago(at) {
+  const seconds = Math.round((Date.now() - at) / 1000);
+  if (seconds < 60) return `${seconds}s ago`;
+  return `${Math.round(seconds / 60)} min ago`;
+}
+
+// Says whether the folder was readable a moment ago, not merely picked once.
+function watchHealth() {
+  const s = state.status;
+  if (state.watching) {
+    return s.temp_root_exists
+      ? "the folder is there"
+      : "the folder is not there yet, which is normal while the game is closed";
+  }
+  const health = fs.healthOf("temp");
+  if (!fs.connected().temp) return "";
+  if (!health) return "not checked yet";
+  if (health.permission !== "granted") return `permission ${health.permission}, click connect again`;
+  return health.readable
+    ? `permission granted, read ${ago(health.at)}`
+    : `permission granted but the folder would not open, checked ${ago(health.at)}`;
 }
 
 function showError(text) {
@@ -108,9 +143,38 @@ function note(text) {
   el("progress").textContent = text;
 }
 
+function showStep() {
+  const lobby = state.step === "lobby";
+  el("step-replays").hidden = lobby;
+  el("step-lobby").hidden = !lobby;
+  el("go-replays").classList.toggle("here", !lobby);
+  el("go-lobby").classList.toggle("here", lobby);
+  localStorage.setItem("hots.step", state.step);
+  if (lobby) showLobbyStep();
+}
+
+function goto(step) {
+  state.step = step;
+  showStep();
+}
+
 async function onLobby(bytes) {
-  state.draft = await api("/draft", "POST", wasm.parseLobby(bytes));
+  state.draft = await api("/draft", "POST", {
+    lobby: wasm.parseLobby(bytes),
+    battletag: state.battletag || null,
+  });
+  goto("lobby");
   render();
+}
+
+// A file input hands back everything the folder held, so say when none of it was a replay.
+function chose(files) {
+  const entries = fs.fromFiles(files);
+  if (!entries.length) {
+    showError(`none of the ${files.length} files end in .StormReplay`);
+    return;
+  }
+  return backfill(entries);
 }
 
 async function backfill(entries) {
@@ -120,17 +184,20 @@ async function backfill(entries) {
   try {
     const known = new Set(await api("/matches/known"));
     const files = list.filter((f) => !known.has(f.name));
+    note(files.length ? `parsing ${files.length} replays` : "nothing new to parse");
+    let failed = 0;
     for (const [i, entry] of files.entries()) {
       note(`parsing replays ${i + 1}/${files.length}`);
       try {
         const record = wasm.parseReplay(await entry.read());
         await api("/matches", "POST", { key: entry.name, record });
       } catch (e) {
-        showError(`${entry.name}: ${e.message}`);
+        failed += 1;
+        if (failed < 4) showError(`${entry.name}: ${e.message}`);
       }
       await new Promise((resume) => setTimeout(resume, 0));
     }
-    note("");
+    note(failed ? `${failed} of ${files.length} could not be read` : "");
     await loadStatus();
   } finally {
     state.busy = false;
@@ -139,48 +206,71 @@ async function backfill(entries) {
 
 async function loadStatus() {
   const s = await api("/status");
+  state.status = s;
   state.watching = s.watching;
-  el("status").textContent =
-    `${s.matches} replays · ${s.failed} unreadable · ${s.battletag || "battletag unset"}`;
+  el("status").textContent = `${s.matches} replays · ${s.failed} unreadable`;
+  el("replays-count").textContent = `${s.matches} replays stored`;
+  showFolders();
+  showLobbyStep();
+  return s;
 }
 
-// The server reading the folders makes every browser equal, so the page asks for nothing.
+// A disabled button with no reason beside it is the same as a broken one.
 function showFolders() {
-  el("folders").hidden = state.watching;
-  el("banner").hidden = true;
-  if (state.watching) return;
+  const at = fs.connected();
+  const can = fs.capability();
+  const hints = fs.hints();
 
+  el("pick-replays").disabled = !can.ok;
+  el("replays-why").textContent = at.replays
+    ? `reading ${at.replays}`
+    : can.ok
+      ? ""
+      : "this browser has no folder access, so use the file picker below";
+  el("replays-hint").textContent = at.replays || !can.ok ? "" : hints.replays;
+  el("copy-replays").hidden = !!at.replays || !can.ok;
+  el("how").textContent = at.replays || !can.ok ? "" : hints.how;
+}
+
+function showLobbyStep() {
   const at = fs.connected();
   const can = fs.capability();
   const hints = fs.hints();
   const blocked = !!hints.tempBlocked;
+  const s = state.status;
 
-  if (!can.ok) {
-    el("banner").textContent = `${can.text} Or run the server on this machine, where it reads the folders itself.`;
+  const [label, path] = state.watching
+    ? ["the server is watching", s.temp_root]
+    : at.temp
+      ? ["this browser is watching", at.temp]
+      : blocked
+        ? ["the browser cannot open the temp folder", ""]
+        : ["nothing is watching for a lobby", ""];
+  el("lobby-state").textContent = label;
+  el("lobby-path").textContent = path;
+  el("lobby-health").textContent = watchHealth();
+
+  const hide = state.watching || !!at.temp;
+  el("pick-temp").hidden = hide;
+  el("pick-temp").disabled = !can.ok || blocked;
+  el("temp-hint").textContent = hide || blocked ? "" : hints.temp;
+  el("copy-temp").hidden = hide || blocked || !hints.temp;
+  el("manual-lobby-box").hidden = state.watching || (can.ok && !blocked);
+
+  if (s.watch_error) {
+    el("banner").textContent = `The server could not watch its folders: ${s.watch_error}`;
     el("banner").hidden = false;
-  } else if (blocked && !at.temp) {
+  } else if (!state.watching && blocked && !at.temp) {
     el("banner").textContent = hints.tempBlocked;
     el("banner").hidden = false;
+  } else if (state.watching) {
+    el("banner").hidden = true;
   }
-
-  el("pick-temp").disabled = !can.ok || blocked;
-  el("pick-replays").disabled = !can.ok;
-  el("manual-replays-box").hidden = can.ok;
-  el("manual-lobby-box").hidden = can.ok && !blocked;
-  el("temp-state").textContent = at.temp ? "connected" : blocked ? "blocked by the browser" : "not connected";
-  el("replays-state").textContent = at.replays ? "connected" : "not connected";
-  el("temp-hint").textContent = at.temp ? "" : hints.temp;
-  el("replays-hint").textContent = at.replays ? "" : hints.replays;
-  el("copy-temp").hidden = at.temp || !hints.temp;
-  el("copy-replays").hidden = at.replays;
-  el("how").textContent = at.temp && at.replays ? "" : hints.how;
-  el("reconnect").hidden = !can.ok || (at.temp && at.replays);
 }
 
 async function loadConfig() {
   const cfg = await api("/config");
   state.minGames = cfg.min_games_for_winrate;
-  el("battletag").value = cfg.battletag || "";
   el("maxheroes").value = cfg.max_heroes;
   el("mingames").value = cfg.min_games_for_winrate;
   el("allmodes").checked = cfg.local_all_modes;
@@ -188,14 +278,12 @@ async function loadConfig() {
 
 async function save() {
   const cfg = await api("/config");
-  cfg.battletag = el("battletag").value.trim() || null;
   cfg.max_heroes = Number(el("maxheroes").value);
   cfg.min_games_for_winrate = Number(el("mingames").value);
   cfg.local_all_modes = el("allmodes").checked;
   try {
     await api("/config", "PUT", cfg);
     state.minGames = cfg.min_games_for_winrate;
-    await loadStatus();
     render();
   } catch (e) {
     showError(e.message);
@@ -206,6 +294,7 @@ function subscribe() {
   const events = new EventSource("/api/events");
   events.addEventListener("lobby", (e) => {
     state.draft = JSON.parse(e.data);
+    goto("lobby");
     render();
   });
   events.addEventListener("ingested", loadStatus);
@@ -226,26 +315,39 @@ async function pick(key) {
   try {
     await fs.pick(key);
     showFolders();
+    showLobbyStep();
     if (key === "replays") backfill();
+    await fs.probe(key);
+    showLobbyStep();
+    if (key === "temp") fs.watchLobby(onLobby);
   } catch (e) {
     if (e.name !== "AbortError") showError(e.message);
   }
 }
 
 async function main() {
-  el("sort").onchange = (e) => {
-    state.sort = e.target.value;
-    render();
-  };
+  el("go-replays").onclick = () => goto("replays");
+  el("go-lobby").onclick = () => goto("lobby");
+  el("to-lobby").onclick = () => goto("lobby");
   el("settings-toggle").onclick = () => {
     el("settings").hidden = !el("settings").hidden;
   };
   el("save").onclick = save;
-  el("pick-temp").onclick = () => pick("temp");
+  el("sort").onchange = (e) => {
+    state.sort = e.target.value;
+    render();
+  };
+  el("battletag").value = state.battletag;
+  el("battletag").onchange = (e) => {
+    state.battletag = e.target.value.trim();
+    localStorage.setItem("hots.battletag", state.battletag);
+  };
   el("pick-replays").onclick = () => pick("replays");
-  el("copy-temp").onclick = () => copy(el("copy-temp"), fs.hints().temp);
+  el("pick-temp").onclick = () => pick("temp");
   el("copy-replays").onclick = () => copy(el("copy-replays"), fs.hints().replays);
-  el("manual-replays").onchange = (e) => backfill(fs.fromFiles(e.target.files));
+  el("copy-temp").onclick = () => copy(el("copy-temp"), fs.hints().temp);
+  el("manual-replays").onchange = (e) => chose(e.target.files);
+  el("manual-replays-dir").onchange = (e) => chose(e.target.files);
   el("manual-lobby").onchange = async (e) => {
     const [file] = e.target.files;
     if (!file) return;
@@ -255,17 +357,19 @@ async function main() {
       showError(err.message);
     }
   };
-  el("reconnect").onclick = async () => {
-    await fs.reconnect();
-    showFolders();
-    backfill();
-  };
 
-  // A missing module must not take the settings panel down with it.
+  setInterval(() => {
+    if (state.step === "lobby") el("lobby-health").textContent = watchHealth();
+  }, 2000);
+
   await wasm.load().catch((e) => showError(`parser: ${e.message}`));
   await loadConfig();
-  await loadStatus();
+  const status = await loadStatus();
   await fs.restore();
+  await Promise.all([fs.probe("temp"), fs.probe("replays")]);
+
+  if (!status.matches && !localStorage.getItem("hots.step")) state.step = "replays";
+  showStep();
   showFolders();
   subscribe();
 
@@ -275,8 +379,8 @@ async function main() {
   if (!state.watching && fs.capability().ok) {
     fs.watchLobby(onLobby);
     setInterval(() => backfill(), 60_000);
+    backfill();
   }
-  if (!state.watching) backfill();
 }
 
 main();

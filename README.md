@@ -2,7 +2,9 @@
 
 Shows the hero pool of the five enemies while the Storm League lobby forms, so you can ban on evidence. It reads the game's own files: no screenshots, no overlay, no memory reads.
 
-Every number comes from the replays on your own disk. There is no external service and no api key: what the database has parsed is what the screen shows, so a player you have never met is simply blank.
+Every number comes from the replays on your own disk. There is no external service and no api key: what the database has parsed is what the screen shows, so a player nobody has met is simply blank.
+
+The home screen watches for a lobby and answers with the enemy hero pools. Behind it sits one other page, `submit your replays`, which is what teaches the database who anyone is. The home screen names the folder it watches and says when it last read it, so a folder that stopped working says so instead of going quiet. Your battletag lives in your own browser, so one server and one shared database serve several people on several machines.
 
 Two ways to run it. The server reads the folders when it sits on the gaming machine, and otherwise the page reads them and parses in wasm, so only battletags, hero names and counts cross the network.
 
@@ -10,7 +12,7 @@ Two ways to run it. The server reads the folders when it sits on the gaming mach
 
 On the machine that runs the game, `make serve` and open `http://localhost:8731`. The server finds the game folders itself, watches them, and the page only draws. Any browser works.
 
-On Linux it looks inside the wine prefix: anything under `~/Games`, any `drive_c` in your home, `~/.wine`, and the Bottles folders. `WINEPREFIX` names one directly, and `replay_dir` and `temp_dir` in `~/.local/share/hots-draft/config.toml` settle it for good. Every prefix it finds contributes its replays, since one machine often holds several.
+On Linux it looks inside the wine prefix: anything under `~/Games`, any `drive_c` in your home, `~/.wine`, and the Bottles folders. The replay folder is the anchor, since it is always on disk, and the temp folder is taken from the same prefix rather than from the system `/tmp`. The client deletes that folder when it quits, so a `Temp` that exists is enough and the path resolves with the game closed. `WINEPREFIX` names a prefix directly, and `replay_dir` and `temp_dir` in `~/.local/share/hots-draft/config.toml` settle it for good. Every prefix contributes its replays, since one machine often holds several.
 
 On Windows that is the only mode that gives live lobbies, because the client writes the battlelobby into `%TEMP%`, which sits under `AppData`, and the browser refuses every folder in there: it answers that the folder contains system files. The server has no such limit.
 
@@ -32,12 +34,12 @@ Documents is a folder that exists with the game closed, and the page walks down 
 
 TLS is not decoration in that mode: the browser gives no folder access to a page served over plain http, and `showDirectoryPicker` exists in Chrome and Edge alone. Firefox and Safari need the first mode, where the server does the reading.
 
-Settings live in the panel behind the `settings` button: your battletag, how many heroes a card shows, and how many games a hero needs before its winrate means anything.
+Type your battletag into the header box. It stays in that browser and travels with each lobby, which is how one server tells one player's team from another's. The `settings` panel holds how many heroes a card shows and how many games a hero needs before its winrate means anything.
 
 ## How it works
 
 1. The client writes `replay.server.battlelobby` into `%TEMP%` when the lobby forms. Whichever side holds the folders reads it within 400 ms and parses it.
-2. The ten battletags reach the server. It answers from SQLite alone, so the enemy rows paint before the first ban.
+2. The ten battletags and your own reach the server. It answers from SQLite alone, so the enemy rows paint before the first ban.
 3. When the match ends the new `.StormReplay` is parsed the same way, and only the result is stored. The next lobby with those players is that much sharper.
 
 Games says what they pick, winrate says what they are good at, so each card carries both and the header sorts by either.
@@ -58,7 +60,7 @@ Games says what they pick, winrate says what they are good at, so each card carr
 
 `replay.server.battlelobby` is bit packed and undocumented, and the same stream sits inside every `.StormReplay`, so one scanner serves the live lobby and the finished match. `replay.details` holds the heroes and the result under short names, so the two join by slot order, checked name by name.
 
-The scan looks for a length that agrees with the `name#1234` behind it. A test covers the one trap in real data: `!` is 0x21, which reads as a length of 16 and steals the byte in front of a sixteen-character tag. A count other than ten is noise and gets rejected, because half of noise is a wrong enemy team.
+The scan anchors on the `#`, walks out to the digits and the name, and keeps the pair only when the byte in front encodes that length, in any of the three encodings seen across builds. A test covers the one trap in real data: `!` is 0x21, which reads as a length of 16 and steals the byte in front of a sixteen-character tag. A count other than ten is noise and gets rejected, because half of noise is a wrong enemy team.
 
 Point `HOTS_TEST_REPLAY` at a `.StormReplay` and `cargo test` checks the parser against it. No replay is committed here: each one carries the battletags of nine other people.
 
@@ -66,6 +68,7 @@ Point `HOTS_TEST_REPLAY` at a `.StormReplay` and `cargo test` checks the parser 
 
 - Firefox and Safari have no File System Access API, so they cannot do the browser-side reading. Run the server on the gaming machine instead and they work like any other browser.
 - Windows blocks `AppData` in every browser folder picker, so a remote server cannot watch a Windows lobby. Replays still work, since Documents is allowed, and the server run locally has no such limit.
-- Coverage is whatever you have played. An enemy who has never shared a game with you shows nothing, and there is no service to ask.
+- Coverage is whatever the database has parsed. An enemy nobody has played with shows nothing, and there is no service to ask.
+- A replay whose lobby stream will not scan is still stored, under the short name from `replay.details`, and a lobby battletag finds it by the part before the `#`. Two players sharing a name merge until one of their replays scans.
 - The game mode comes from `m_ammId`. A real file confirms the Quick Match id; the published tables supply the other nine.
 - A build past the newest protocol table decodes with the nearest older one rather than failing, since the two streams this reads are self-describing. A patch that moves a field would need `rs-heroprotocol` regenerated.

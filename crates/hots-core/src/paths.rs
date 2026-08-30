@@ -53,8 +53,10 @@ pub fn temp_root(cfg: &Config) -> PathBuf {
         return native;
     }
     let home = dirs::home_dir();
-    home_temp_roots(home.as_deref())
-        .into_iter()
+    replay_dirs(cfg)
+        .iter()
+        .filter_map(|dir| temp_beside(dir))
+        .chain(home_temp_roots(home.as_deref()))
         .chain(temps_of(named_prefix_users()))
         .chain(wine_temp_roots(home.as_deref()))
         .next()
@@ -118,12 +120,36 @@ pub fn wine_replay_dirs(home: Option<&Path>) -> Vec<PathBuf> {
     replays_of(wine_users(home))
 }
 
+/// The game creates its own folder at launch and deletes it on exit, so a `Temp` that
+/// exists is proof enough, and a folder that is already there wins over one that is not.
 fn temps_of(users: Vec<PathBuf>) -> Vec<PathBuf> {
-    users
+    let mut ready = Vec::new();
+    let mut waiting = Vec::new();
+    for candidate in users
         .iter()
         .flat_map(|user| TEMP_DIRS.map(|temp| user.join(temp).join(TEMP_SUBDIR)))
-        .filter(|dir| dir.is_dir())
-        .collect()
+    {
+        if candidate.is_dir() {
+            ready.push(candidate);
+        } else if candidate.parent().is_some_and(Path::is_dir) {
+            waiting.push(candidate);
+        }
+    }
+    ready.append(&mut waiting);
+    ready
+}
+
+/// The replays and the temp folder share a prefix, so one finds the other.
+pub fn temp_beside(replay_dir: &Path) -> Option<PathBuf> {
+    let user = replay_dir.ancestors().find(|dir| {
+        dir.parent()
+            .is_some_and(|p| p.file_name() == Some("users".as_ref()))
+            && dir
+                .parent()
+                .and_then(Path::parent)
+                .is_some_and(|p| p.file_name() == Some("drive_c".as_ref()))
+    })?;
+    temps_of(vec![user.to_path_buf()]).into_iter().next()
 }
 
 fn replays_of(users: Vec<PathBuf>) -> Vec<PathBuf> {
