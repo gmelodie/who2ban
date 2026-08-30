@@ -1,0 +1,15 @@
+{
+  "region": 2,
+  "players": [
+    { "battletag": "Me#2101", "team": 0, "slot": 0 },
+    { "battletag": "Ally1#2102", "team": 0, "slot": 1 },
+    { "battletag": "Ally2#2103", "team": 0, "slot": 2 },
+    { "battletag": "Ally3#2104", "team": 0, "slot": 3 },
+    { "battletag": "Ally4#2105", "team": 0, "slot": 4 },
+    { "battletag": "Foe1#2201", "team": 1, "slot": 5 },
+    { "battletag": "Foe2#2202", "team": 1, "slot": 6 },
+    { "battletag": "Foe3#2203", "team": 1, "slot": 7 },
+    { "battletag": "Foe4#2204", "team": 1, "slot": 8 },
+    { "battletag": "Foe5#2205", "team": 1, "slot": 9 }
+  ]
+}

@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>HotS Draft Helper</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <header>
+      <h1>Draft Helper</h1>
+      <div id="status" class="status">starting</div>
+      <div class="controls">
+        <label>sort
+          <select id="sort">
+            <option value="games">games</option>
+            <option value="winrate">winrate</option>
+          </select>
+        </label>
+        <button id="settings-toggle" type="button">settings</button>
+      </div>
+    </header>
+
+    <section id="settings" hidden>
+      <label>battletag <input id="battletag" placeholder="Name#1234" /></label>
+      <label>api key <input id="apikey" type="password" /></label>
+      <label>game type <input id="gametype" /></label>
+      <label>cache days <input id="ttl" type="number" min="1" /></label>
+      <label>heroes shown <input id="maxheroes" type="number" min="1" /></label>
+      <label class="check"><input id="allmodes" type="checkbox" /> count every mode locally</label>
+      <button id="save" type="button">save</button>
+      <div id="paths" class="paths"></div>
+    </section>
+
+    <main id="players" class="players">
+      <p class="empty">Waiting for a lobby. Start a game.</p>
+    </main>
+
+    <footer id="errors"></footer>
+    <script src="app.js"></script>
+  </body>
+</html>
