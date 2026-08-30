@@ -20,12 +20,25 @@
       </div>
     </header>
 
-    <section class="folders">
-      <span>temp folder <b id="temp-state">not connected</b></span>
-      <button id="pick-temp" type="button">choose</button>
-      <span>replays <b id="replays-state">not connected</b></span>
-      <button id="pick-replays" type="button">choose</button>
+    <p id="banner" class="banner" hidden></p>
+
+    <section id="folders" class="folders">
+      <span class="folder">
+        <span>temp folder <b id="temp-state">not connected</b></span>
+        <button id="pick-temp" type="button">choose</button>
+        <code id="temp-hint" class="hint"></code>
+      </span>
+      <span class="folder">
+        <span>replays <b id="replays-state">not connected</b></span>
+        <button id="pick-replays" type="button">choose</button>
+        <code id="replays-hint" class="hint"></code>
+      </span>
+      <span id="how" class="hint"></span>
       <button id="reconnect" type="button" hidden>reconnect</button>
+      <span id="manual" class="manual" hidden>
+        <label>replay folder <input id="manual-replays" type="file" webkitdirectory multiple /></label>
+        <label>battlelobby <input id="manual-lobby" type="file" /></label>
+      </span>
       <span id="progress" class="progress"></span>
     </section>
 

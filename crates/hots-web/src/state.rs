@@ -1,4 +1,5 @@
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use hots_core::{Config, Db, Draft, paths};
 use serde::Serialize;
@@ -18,6 +19,7 @@ pub struct Status {
     pub has_api_key: bool,
     pub replay_dirs: Vec<String>,
     pub temp_root: String,
+    pub watching: bool,
 }
 
 pub struct App {
@@ -25,6 +27,7 @@ pub struct App {
     cfg: Mutex<Config>,
     draft: Mutex<Option<Draft>>,
     events: broadcast::Sender<Event>,
+    watching: AtomicBool,
 }
 
 impl App {
@@ -34,7 +37,12 @@ impl App {
             cfg: Mutex::new(cfg),
             draft: Mutex::new(None),
             events: broadcast::channel(64).0,
+            watching: AtomicBool::new(false),
         }
+    }
+
+    pub fn set_watching(&self, on: bool) {
+        self.watching.store(on, Ordering::Relaxed);
     }
 
     pub fn config(&self) -> Config {
@@ -89,6 +97,7 @@ impl App {
                 .map(|p| p.display().to_string())
                 .collect(),
             temp_root: paths::temp_root(&cfg).display().to_string(),
+            watching: self.watching.load(Ordering::Relaxed),
         })
     }
 }

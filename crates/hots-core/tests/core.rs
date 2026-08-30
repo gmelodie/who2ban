@@ -323,3 +323,58 @@ fn recognises_the_game_files() {
     assert!(is_battlelobby(Path::new("/x/replay.server.battlelobby")));
     assert!(!is_battlelobby(Path::new("/x/replay.details")));
 }
+
+fn lutris_prefix(home: &std::path::Path, user: &str) -> std::path::PathBuf {
+    let prefix = home
+        .join("Games/heroes-of-the-storm/drive_c/users")
+        .join(user);
+    std::fs::create_dir_all(prefix.join("Temp/Heroes of the Storm")).unwrap();
+    std::fs::create_dir_all(prefix.join(
+        "Documents/Heroes of the Storm/Accounts/1234567/1-Hero-1-1234567/Replays/Multiplayer",
+    ))
+    .unwrap();
+    prefix
+}
+
+#[test]
+fn finds_the_folders_of_a_lutris_prefix() {
+    use hots_core::paths::{wine_replay_dirs, wine_temp_roots};
+
+    let home = tempfile::tempdir().unwrap();
+    lutris_prefix(home.path(), "gabe");
+    std::fs::create_dir_all(
+        home.path()
+            .join("Games/heroes-of-the-storm/drive_c/users/Public"),
+    )
+    .unwrap();
+
+    let temps = wine_temp_roots(Some(home.path()));
+    assert_eq!(temps.len(), 1);
+    assert!(temps[0].ends_with("users/gabe/Temp/Heroes of the Storm"));
+
+    let replays = wine_replay_dirs(Some(home.path()));
+    assert_eq!(replays.len(), 1);
+    assert!(replays[0].ends_with("1-Hero-1-1234567/Replays/Multiplayer"));
+}
+
+#[test]
+fn finds_the_folders_of_a_bottle() {
+    use hots_core::paths::wine_temp_roots;
+
+    let home = tempfile::tempdir().unwrap();
+    let bottle = home.path().join(".local/share/bottles/bottles/hots");
+    std::fs::create_dir_all(bottle.join("drive_c/users/steamuser/Temp/Heroes of the Storm"))
+        .unwrap();
+
+    let temps = wine_temp_roots(Some(home.path()));
+    assert_eq!(temps.len(), 1);
+    assert!(temps[0].ends_with("users/steamuser/Temp/Heroes of the Storm"));
+}
+
+#[test]
+fn finds_nothing_without_a_prefix() {
+    let home = tempfile::tempdir().unwrap();
+    assert!(hots_core::paths::wine_temp_roots(Some(home.path())).is_empty());
+    assert!(hots_core::paths::wine_replay_dirs(Some(home.path())).is_empty());
+    assert!(hots_core::paths::wine_temp_roots(None).is_empty());
+}

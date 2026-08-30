@@ -1,5 +1,6 @@
 mod routes;
 mod state;
+mod watcher;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -30,6 +31,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let cfg = Config::load()?;
     let app = Arc::new(App::new(Db::open(&paths::db_path())?, cfg));
+
+    if watcher::start(app.clone()) {
+        app.set_watching(true);
+        println!("reading the game folders from this machine");
+    }
 
     let router = Router::new()
         .route("/", get(index))

@@ -51,6 +51,10 @@ pub async fn get_draft(State(app): State<Arc<App>>) -> Json<Option<Draft>> {
 
 /// The page parses the battlelobby itself, so only the ten battletags arrive here.
 pub async fn post_draft(State(app): State<Arc<App>>, Json(lobby): Json<Lobby>) -> Reply<Draft> {
+    Ok(Json(accept_lobby(&app, lobby)?))
+}
+
+pub fn accept_lobby(app: &Arc<App>, lobby: Lobby) -> hots_core::Result<Draft> {
     let cfg = app.config();
     let mut view = draft::build(&app.db, &cfg, &lobby)?;
 
@@ -80,9 +84,9 @@ pub async fn post_draft(State(app): State<Arc<App>>, Json(lobby): Json<Lobby>) -
     app.set_draft(view.clone());
     app.emit("lobby", &view);
     if let Some(hp) = hp {
-        fetch_all(&app, hp, wanted);
+        fetch_all(app, hp, wanted);
     }
-    Ok(Json(view))
+    Ok(view)
 }
 
 fn fetch_all(app: &Arc<App>, hp: Arc<HpClient>, wanted: Vec<(String, u8)>) {
