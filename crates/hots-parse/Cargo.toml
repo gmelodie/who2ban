@@ -1,0 +1,15 @@
+[package]
+name = "hots-parse"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Replay and battlelobby parsing, buildable for wasm32"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+heroprotocol = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }

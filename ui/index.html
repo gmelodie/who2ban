@@ -20,6 +20,15 @@
       </div>
     </header>
 
+    <section class="folders">
+      <span>temp folder <b id="temp-state">not connected</b></span>
+      <button id="pick-temp" type="button">choose</button>
+      <span>replays <b id="replays-state">not connected</b></span>
+      <button id="pick-replays" type="button">choose</button>
+      <button id="reconnect" type="button" hidden>reconnect</button>
+      <span id="progress" class="progress"></span>
+    </section>
+
     <section id="settings" hidden>
       <label>battletag <input id="battletag" placeholder="Name#1234" /></label>
       <label>api key <input id="apikey" type="password" /></label>
@@ -28,7 +37,9 @@
       <label>heroes shown <input id="maxheroes" type="number" min="1" /></label>
       <label class="check"><input id="allmodes" type="checkbox" /> count every mode locally</label>
       <button id="save" type="button">save</button>
-      <div id="paths" class="paths"></div>
+      <p class="paths">Choose <code>%TEMP%\Heroes of the Storm</code> and the
+      <code>Replays\Multiplayer</code> folder of your account. The browser keeps both
+      permissions, and the files are read and parsed here: only battletags reach the server.</p>
     </section>
 
     <main id="players" class="players">
@@ -36,6 +47,6 @@
     </main>
 
     <footer id="errors"></footer>
-    <script src="app.js"></script>
+    <script type="module" src="app.js"></script>
   </body>
 </html>

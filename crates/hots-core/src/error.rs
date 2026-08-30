@@ -5,9 +5,7 @@ pub enum Error {
     #[error("sqlite: {0}")]
     Sqlite(#[from] rusqlite::Error),
     #[error("parser: {0}")]
-    Parser(#[from] heroprotocol::Error),
-    #[error("malformed file: {0}")]
-    Malformed(String),
+    Parser(#[from] hots_parse::Error),
     #[error("watcher: {0}")]
     Watch(#[from] notify::Error),
     #[error("http: {0}")]
