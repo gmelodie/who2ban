@@ -2,7 +2,7 @@ import * as fs from "./fs.js";
 import * as wasm from "./wasm.js";
 
 const el = (id) => document.getElementById(id);
-const state = { draft: null, sort: "games", minGames: 3, busy: false };
+const state = { draft: null, sort: "games", minGames: 3, busy: false, watching: false };
 
 async function api(path, method = "GET", body) {
   const res = await fetch(`/api${path}`, {
@@ -147,16 +147,17 @@ async function onLobby(bytes) {
   render();
 }
 
-async function backfill() {
-  if (state.busy || !fs.connected().replays) return;
+async function backfill(entries) {
+  const list = entries || (fs.connected().replays ? await fs.listReplays() : []);
+  if (state.busy || !list.length) return;
   state.busy = true;
   try {
     const known = new Set(await api("/matches/known"));
-    const files = (await fs.listReplays()).filter((f) => !known.has(f.name));
+    const files = list.filter((f) => !known.has(f.name));
     for (const [i, entry] of files.entries()) {
       note(`parsing replays ${i + 1}/${files.length}`);
       try {
-        const record = wasm.parseReplay(await fs.readReplay(entry));
+        const record = wasm.parseReplay(await entry.read());
         await api("/matches", "POST", { key: entry.name, record });
       } catch (e) {
         showError(`${entry.name}: ${e.message}`);
@@ -172,16 +173,34 @@ async function backfill() {
 
 async function loadStatus() {
   const s = await api("/status");
+  state.watching = s.watching;
   el("status").textContent =
     `${s.matches} replays · ${s.failed} unreadable · ${s.battletag || "battletag unset"}` +
     (s.has_api_key ? "" : " · no api key");
 }
 
+// The server reading the folders makes every browser equal, so the page asks for nothing.
 function showFolders() {
+  el("folders").hidden = state.watching;
+  el("banner").hidden = true;
+  if (state.watching) return;
+
   const at = fs.connected();
+  const can = fs.capability();
+  if (!can.ok) {
+    el("banner").textContent = `${can.text} Or run the server on this machine, where it reads the folders itself.`;
+    el("banner").hidden = false;
+  }
+  el("pick-temp").disabled = !can.ok;
+  el("pick-replays").disabled = !can.ok;
+  el("manual").hidden = can.ok;
   el("temp-state").textContent = at.temp ? "connected" : "not connected";
   el("replays-state").textContent = at.replays ? "connected" : "not connected";
-  el("reconnect").hidden = at.temp && at.replays;
+  const hints = fs.hints();
+  el("temp-hint").textContent = at.temp ? "" : hints.temp;
+  el("replays-hint").textContent = at.replays ? "" : hints.replays;
+  el("how").textContent = at.temp && at.replays ? "" : hints.how;
+  el("reconnect").hidden = !can.ok || (at.temp && at.replays);
 }
 
 async function loadConfig() {
@@ -245,17 +264,24 @@ async function main() {
   el("save").onclick = save;
   el("pick-temp").onclick = () => pick("temp");
   el("pick-replays").onclick = () => pick("replays");
+  el("manual-replays").onchange = (e) => backfill(fs.fromFiles(e.target.files));
+  el("manual-lobby").onchange = async (e) => {
+    const [file] = e.target.files;
+    if (!file) return;
+    try {
+      await onLobby(await fs.lobbyFromFile(file));
+    } catch (err) {
+      showError(err.message);
+    }
+  };
   el("reconnect").onclick = async () => {
     await fs.reconnect();
     showFolders();
     backfill();
   };
 
-  if (!fs.supported) {
-    note("This browser has no File System Access API. Use Chrome or Edge.");
-  }
-
-  await wasm.load();
+  // A missing module must not take the settings panel down with it.
+  await wasm.load().catch((e) => showError(`parser: ${e.message}`));
   await loadConfig();
   await loadStatus();
   await fs.restore();
@@ -265,9 +291,11 @@ async function main() {
   state.draft = await api("/draft");
   render();
 
-  fs.watchLobby(onLobby);
-  backfill();
-  setInterval(backfill, 60_000);
+  if (!state.watching && fs.capability().ok) {
+    fs.watchLobby(onLobby);
+    setInterval(() => backfill(), 60_000);
+  }
+  if (!state.watching) backfill();
 }
 
 main();
