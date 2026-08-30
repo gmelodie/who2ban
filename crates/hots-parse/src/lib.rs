@@ -5,7 +5,7 @@ pub mod parse;
 mod wasm;
 
 pub use model::{GameMode, Lobby, LobbyPlayer, MatchPlayer, MatchRecord, Toon};
-pub use parse::{battlelobby, replay, replay_bytes};
+pub use parse::{battlelobby, lobby_stream, replay, replay_bytes};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {

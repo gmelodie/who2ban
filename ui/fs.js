@@ -5,6 +5,7 @@ const LOBBY_DIRS = [
 ];
 
 const handles = { temp: null, replays: null };
+const health = { temp: null, replays: null };
 let lobbyStamp = null;
 let timer = null;
 
@@ -193,8 +194,10 @@ export async function lobbyFromFile(file) {
 // The client deletes its temp folder on exit, so every poll re-walks the path.
 export function watchLobby(onLobby, everyMs = 400) {
   clearInterval(timer);
+  let ticks = 0;
   timer = setInterval(async () => {
     if (!handles.temp) return;
+    if (ticks++ % 10 === 0) await probe("temp");
     const found = await readLobby();
     if (!found) return;
     try {
@@ -206,6 +209,30 @@ export function watchLobby(onLobby, everyMs = 400) {
   }, everyMs);
 }
 
+// The api gives a folder its name and never its path, so the name is all there is to show.
 export function connected() {
-  return { temp: !!handles.temp, replays: !!handles.replays };
+  return { temp: handles.temp?.name || null, replays: handles.replays?.name || null };
+}
+
+// A granted permission is not a readable folder, so prove it by reading one entry.
+export async function probe(key) {
+  const handle = handles[key];
+  if (!handle) {
+    health[key] = null;
+    return null;
+  }
+  const permission = await handle.queryPermission({ mode: "read" }).catch(() => "denied");
+  let readable = false;
+  if (permission === "granted") {
+    readable = await handle
+      .entries()
+      .next()
+      .then(() => true, () => false);
+  }
+  health[key] = { permission, readable, at: Date.now() };
+  return health[key];
+}
+
+export function healthOf(key) {
+  return health[key];
 }

@@ -8,58 +8,83 @@
   <body>
     <header>
       <h1>Draft Helper</h1>
+      <nav class="steps">
+        <button id="go-lobby" class="step" type="button">home</button>
+        <button id="go-replays" class="step" type="button">submit your replays</button>
+      </nav>
       <div id="status" class="status">starting</div>
-      <div class="controls">
-        <label>sort
-          <select id="sort">
-            <option value="games">games</option>
-            <option value="winrate">winrate</option>
-          </select>
-        </label>
-        <button id="settings-toggle" type="button">settings</button>
-      </div>
+      <label class="who">you
+        <input id="battletag" placeholder="Name#1234" size="14" />
+      </label>
+      <button id="settings-toggle" type="button">settings</button>
     </header>
 
     <p id="banner" class="banner" hidden></p>
 
-    <section id="folders" class="folders">
-      <span class="folder">
-        <span>temp folder <b id="temp-state">not connected</b></span>
-        <button id="pick-temp" type="button">choose</button>
-        <code id="temp-hint" class="hint"></code>
-        <button id="copy-temp" class="copy" type="button" title="copy the path">copy</button>
-      </span>
-      <span class="folder">
-        <span>replays <b id="replays-state">not connected</b></span>
-        <button id="pick-replays" type="button">choose</button>
-        <code id="replays-hint" class="hint"></code>
-        <button id="copy-replays" class="copy" type="button" title="copy the path">copy</button>
-      </span>
-      <span id="how" class="hint"></span>
-      <button id="reconnect" type="button" hidden>reconnect</button>
-      <span id="manual-replays-box" class="manual" hidden>
-        <label>replay folder <input id="manual-replays" type="file" webkitdirectory multiple /></label>
-      </span>
-      <span id="manual-lobby-box" class="manual" hidden>
-        <label>battlelobby <input id="manual-lobby" type="file" /></label>
-      </span>
-      <span id="progress" class="progress"></span>
-    </section>
-
     <section id="settings" hidden>
-      <label>battletag <input id="battletag" placeholder="Name#1234" /></label>
       <label>heroes shown <input id="maxheroes" type="number" min="1" /></label>
       <label>min games for a winrate <input id="mingames" type="number" min="1" /></label>
-      <label class="check"><input id="allmodes" type="checkbox" /> count every mode locally</label>
+      <label class="check"><input id="allmodes" type="checkbox" /> count every mode</label>
       <button id="save" type="button">save</button>
-      <p class="paths">Choose <code>%TEMP%\Heroes of the Storm</code> and the
-      <code>Replays\Multiplayer</code> folder of your account. The browser keeps both
-      permissions, and the files are read and parsed here. Every number on the screen comes from
-      the replays this database has parsed, and from nowhere else.</p>
+      <p class="paths">Your battletag stays in this browser, so one server can serve several
+      people. The replays are shared: whatever anyone adds helps everyone.</p>
     </section>
 
-    <main id="players" class="players">
-      <p class="empty">Waiting for a lobby. Start a game.</p>
+    <main>
+      <section id="step-replays" class="step-body" hidden>
+        <h2>Submit your replays</h2>
+        <p class="lead">Every number on the draft screen comes from these. More replays, more
+        players the helper knows. Nothing is uploaded: each file is parsed here, and only the
+        result of the match is stored.</p>
+
+        <div class="row">
+          <button id="pick-replays" type="button">choose the replay folder</button>
+          <span id="replays-why" class="hint"></span>
+          <code id="replays-hint" class="hint"></code>
+          <button id="copy-replays" class="copy" type="button">copy</button>
+        </div>
+        <div class="row">
+          <label class="filebox">or pick the replay files, as many as you like
+            <input id="manual-replays" type="file" multiple />
+          </label>
+          <label class="filebox">or a whole folder
+            <input id="manual-replays-dir" type="file" webkitdirectory multiple />
+          </label>
+        </div>
+        <p id="how" class="hint"></p>
+
+        <div class="row">
+          <b id="replays-count">0 replays stored</b>
+          <span id="progress" class="progress"></span>
+        </div>
+        <div class="row">
+          <button id="to-lobby" class="primary" type="button">done, back to the lobby</button>
+        </div>
+      </section>
+
+      <section id="step-lobby" class="step-body">
+        <div class="row">
+          <b id="lobby-state">not watching</b>
+          <code id="lobby-path" class="hint"></code>
+          <span id="lobby-health" class="hint"></span>
+          <button id="pick-temp" type="button">connect the temp folder</button>
+          <code id="temp-hint" class="hint"></code>
+          <button id="copy-temp" class="copy" type="button">copy</button>
+          <label class="filebox" id="manual-lobby-box" hidden>or open a battlelobby
+            <input id="manual-lobby" type="file" />
+          </label>
+          <label class="sortbox">sort
+            <select id="sort">
+              <option value="games">games</option>
+              <option value="winrate">winrate</option>
+            </select>
+          </label>
+        </div>
+
+        <div id="players" class="players">
+          <p class="empty">Waiting for a lobby. Start a game.</p>
+        </div>
+      </section>
     </main>
 
     <footer id="errors"></footer>

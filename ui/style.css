@@ -40,7 +40,11 @@ h1 {
 }
 
 .status { color: var(--dim); flex: 1; }
-.controls { display: flex; gap: 8px; align-items: center; }
+.who { color: var(--dim); display: flex; gap: 6px; align-items: center; }
+
+.steps { display: flex; gap: 6px; }
+.step { color: var(--dim); }
+.step.here { color: var(--warn); border-color: var(--warn); }
 
 button, select, input {
   background: var(--raise);
@@ -63,25 +67,27 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
   border-bottom: 1px solid var(--line);
 }
 
-.folders {
+.step-body { padding: 16px; }
+.step-body h2 { font-size: 15px; margin: 0 0 6px; }
+.lead { color: var(--dim); max-width: 62ch; margin: 0 0 14px; }
+
+.row {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 8px 16px;
-  border-bottom: 1px solid var(--line);
-  color: var(--dim);
-  font-size: 13px;
   flex-wrap: wrap;
+  margin-bottom: 10px;
+  color: var(--dim);
 }
 
-.folders b { color: var(--text); font-weight: 500; }
-.folder { display: flex; align-items: center; gap: 8px; }
+.row b { color: var(--text); font-weight: 500; }
+.filebox, .sortbox { display: flex; gap: 6px; align-items: center; }
+.sortbox { margin-left: auto; }
+.primary { border-color: var(--warn); color: var(--warn); }
 .hint { color: var(--dim); font-family: ui-monospace, monospace; font-size: 12px; }
 .copy { padding: 1px 6px; font-size: 12px; }
-.manual { display: flex; gap: 12px; align-items: center; }
-.manual label { display: flex; gap: 4px; align-items: center; }
-.manual input { max-width: 190px; }
-.progress { margin-left: auto; color: var(--warn); }
+input[type="file"] { max-width: 210px; }
+.progress { color: var(--warn); }
 
 #settings {
   display: grid;
@@ -98,6 +104,7 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 .paths code { color: var(--warn); }
 
 .players {
+  padding: 0;
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
   gap: 12px;

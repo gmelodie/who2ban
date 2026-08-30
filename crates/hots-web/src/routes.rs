@@ -47,20 +47,32 @@ pub async fn get_draft(State(app): State<Arc<App>>) -> Json<Option<Draft>> {
     Json(app.draft())
 }
 
-/// The page parses the battlelobby itself, so only the ten battletags arrive here.
-pub async fn post_draft(State(app): State<Arc<App>>, Json(lobby): Json<Lobby>) -> Reply<Draft> {
-    Ok(Json(accept_lobby(&app, lobby)?))
+#[derive(Deserialize)]
+pub struct LobbyBody {
+    pub lobby: Lobby,
+    /// Who is asking. Every browser answers for itself.
+    pub battletag: Option<String>,
 }
 
-pub fn accept_lobby(app: &Arc<App>, lobby: Lobby) -> hots_core::Result<Draft> {
+/// The page parses the battlelobby itself, so only the ten battletags arrive here.
+pub async fn post_draft(State(app): State<Arc<App>>, Json(body): Json<LobbyBody>) -> Reply<Draft> {
+    Ok(Json(accept_lobby(
+        &app,
+        body.lobby,
+        body.battletag.as_deref(),
+    )?))
+}
+
+pub fn accept_lobby(app: &Arc<App>, lobby: Lobby, me: Option<&str>) -> hots_core::Result<Draft> {
     let cfg = app.config();
     tracing::info!(
         region = lobby.region,
         players = lobby.players.len(),
+        me = me.unwrap_or("unset"),
         "lobby"
     );
 
-    let view = draft::build(&app.db, &cfg, &lobby)?;
+    let view = draft::build(&app.db, &cfg, &lobby, me)?;
     tracing::info!(
         my_team = ?view.my_team,
         enemies = view.enemies().count(),

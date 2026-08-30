@@ -43,7 +43,10 @@ fn start_replay_watch(
     cfg: &Config,
     tx: Sender<WatchEvent>,
 ) -> Result<Option<notify::RecommendedWatcher>> {
-    let dirs = paths::replay_dirs(cfg);
+    let dirs: Vec<_> = paths::replay_dirs(cfg)
+        .into_iter()
+        .filter(|dir| dir.is_dir())
+        .collect();
     if dirs.is_empty() {
         return Ok(None);
     }

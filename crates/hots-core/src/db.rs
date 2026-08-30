@@ -21,14 +21,17 @@ CREATE TABLE IF NOT EXISTS matches(
 
 CREATE TABLE IF NOT EXISTS match_players(
     match_id  INTEGER NOT NULL REFERENCES matches(id) ON DELETE CASCADE,
-    battletag TEXT NOT NULL,
+    handle    TEXT NOT NULL,
+    name      TEXT NOT NULL,
+    battletag TEXT,
     hero      TEXT NOT NULL,
     team      INTEGER NOT NULL,
     won       INTEGER NOT NULL,
-    PRIMARY KEY(match_id, battletag)
+    PRIMARY KEY(match_id, handle)
 );
 
 CREATE INDEX IF NOT EXISTS match_players_battletag ON match_players(battletag);
+CREATE INDEX IF NOT EXISTS match_players_name ON match_players(name);
 
 DROP TABLE IF EXISTS hp_hero_stats;
 DROP TABLE IF EXISTS players;
@@ -39,6 +42,10 @@ CREATE TABLE IF NOT EXISTS replay_errors(
     at          INTEGER NOT NULL
 );
 "#;
+
+/// The stored shape changed with the identity of a player, and every row of it comes
+/// back from the replays on disk, so an old database is dropped rather than migrated.
+const SCHEMA_VERSION: i64 = 2;
 
 pub fn now() -> i64 {
     std::time::SystemTime::now()
@@ -71,6 +78,13 @@ impl Db {
     }
 
     fn from_conn(conn: Connection) -> Result<Db> {
+        let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        if version < SCHEMA_VERSION {
+            conn.execute_batch(
+                "DROP TABLE IF EXISTS match_players; DROP TABLE IF EXISTS matches;",
+            )?;
+            conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+        }
         conn.execute_batch(SCHEMA)?;
         Ok(Db {
             conn: Mutex::new(conn),
@@ -112,9 +126,9 @@ impl Db {
         let id = tx.last_insert_rowid();
         for p in &replay.players {
             tx.execute(
-                "INSERT OR REPLACE INTO match_players(match_id, battletag, hero, team, won)
-                 VALUES(?1, ?2, ?3, ?4, ?5)",
-                params![id, p.battletag, p.hero, p.team, p.won as i64],
+                "INSERT OR REPLACE INTO match_players(match_id, handle, name, battletag, hero, team, won)
+                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![id, p.handle(), p.name, p.battletag, p.hero, p.team, p.won as i64],
             )?;
         }
         tx.execute("DELETE FROM replay_errors WHERE replay_path = ?1", [path])?;
@@ -130,16 +144,18 @@ impl Db {
         Ok(())
     }
 
-    /// Storm League absorbed Hero League and Team League, so the old queues count as ranked.
+    /// A replay whose battlelobby would not scan has the short name and nothing else,
+    /// so the name stands in. Storm League absorbed Hero League and Team League.
     pub fn local_heroes(&self, battletag: &str, all_modes: bool) -> Result<Vec<LocalHero>> {
+        let name = battletag.split_once('#').map_or(battletag, |(n, _)| n);
         let conn = self.lock();
         let sql = "SELECT mp.hero, count(*), sum(mp.won)
                    FROM match_players mp JOIN matches m ON m.id = mp.match_id
-                   WHERE mp.battletag = ?1
+                   WHERE (mp.battletag = ?1 OR (mp.battletag IS NULL AND mp.name = ?3))
                      AND (?2 OR m.mode IN ('StormLeague', 'HeroLeague', 'TeamLeague'))
                    GROUP BY mp.hero ORDER BY count(*) DESC";
         let mut stmt = conn.prepare(sql)?;
-        let rows = stmt.query_map(params![battletag, all_modes], |r| {
+        let rows = stmt.query_map(params![battletag, all_modes, name], |r| {
             Ok(LocalHero {
                 hero: r.get(0)?,
                 games: r.get::<_, i64>(1)? as u32,
@@ -149,13 +165,13 @@ impl Db {
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     }
 
-    /// The battletag seen in the most stored matches, used when config has none.
+    /// The player seen in the most stored matches, used when nobody says who they are.
     pub fn likely_self(&self) -> Result<Option<String>> {
         let conn = self.lock();
         let tag = conn
             .query_row(
-                "SELECT battletag FROM match_players
-                 GROUP BY battletag ORDER BY count(*) DESC LIMIT 1",
+                "SELECT coalesce(battletag, name) FROM match_players
+                 GROUP BY handle ORDER BY count(*) DESC LIMIT 1",
                 [],
                 |r| r.get::<_, String>(0),
             )
