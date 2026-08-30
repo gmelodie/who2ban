@@ -1,10 +1,28 @@
-.PHONY: wasm serve test check dist
+.DEFAULT_GOAL := up
+.PHONY: up down logs serve wasm test check dist
+
+# https on 443, behind nginx and a Let's Encrypt certificate.
+up: .env
+	docker compose up -d --build
+	@echo "https://$$(grep -E '^DOMAIN=' .env | cut -d= -f2)"
+
+down:
+	docker compose down
+
+logs:
+	docker compose logs -f
+
+.env:
+	@cp .env.example .env
+	@echo "wrote .env from .env.example. Fill it in, then run make again."
+	@false
+
+# Local run without docker or tls, reachable at http://localhost:8731 only.
+serve: wasm
+	cargo run -p hots-web
 
 wasm:
 	cargo build -p hots-parse --release --target wasm32-unknown-unknown
-
-serve: wasm
-	cargo run -p hots-web
 
 test:
 	cargo test --workspace
@@ -14,7 +32,6 @@ check:
 	cargo clippy --workspace --all-targets
 	cargo clippy -p hots-parse --target wasm32-unknown-unknown
 
-# The server reads hots_parse.wasm from its own folder.
 dist: wasm
 	cargo build --release -p hots-web
 	install -D target/release/hots-web dist/hots-web

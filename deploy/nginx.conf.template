@@ -1,0 +1,55 @@
+events {}
+
+http {
+    include       /etc/nginx/mime.types;
+    default_type  application/octet-stream;
+    sendfile      on;
+    server_tokens off;
+
+    server {
+        listen 80;
+        server_name ${DOMAIN};
+
+        location /.well-known/acme-challenge/ {
+            root /var/www/certbot;
+        }
+
+        location / {
+            return 301 https://$host$request_uri;
+        }
+    }
+
+    server {
+        listen 443 ssl;
+        http2 on;
+        server_name ${DOMAIN};
+
+        ssl_certificate     ${CERT_DIR}/fullchain.pem;
+        ssl_certificate_key ${CERT_DIR}/privkey.pem;
+        ssl_protocols       TLSv1.2 TLSv1.3;
+        ssl_session_cache   shared:SSL:10m;
+
+        auth_basic           "hots draft";
+        auth_basic_user_file /etc/nginx/htpasswd;
+
+        client_max_body_size 1m;
+
+        location / {
+            proxy_pass http://app:8731;
+            proxy_http_version 1.1;
+            proxy_set_header Host $host;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+        }
+
+        # The event stream must not sit in a buffer waiting to be full.
+        location /api/events {
+            proxy_pass http://app:8731;
+            proxy_http_version 1.1;
+            proxy_set_header Host $host;
+            proxy_buffering off;
+            proxy_cache off;
+            proxy_read_timeout 1h;
+        }
+    }
+}
