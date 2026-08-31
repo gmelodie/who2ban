@@ -10,9 +10,6 @@ use hots_core::{Draft, DraftPlayer};
 use settings::Settings;
 use worker::{Report, Worker};
 
-/// Below this a winrate is noise, so it is shown grey and without a number.
-const MIN_GAMES: u32 = 3;
-
 fn main() -> eframe::Result {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -47,6 +44,8 @@ struct App {
     errors: Vec<String>,
     editing: bool,
     sort_by_winrate: bool,
+    /// Below this a winrate is noise, so it is shown grey and without a number.
+    min_games: u32,
 }
 
 impl App {
@@ -55,6 +54,7 @@ impl App {
         App {
             worker: Worker::start(settings.clone()),
             editing: settings.battletag.is_empty(),
+            min_games: settings.folders().min_games_for_winrate,
             settings,
             draft: None,
             temp: None,
@@ -95,6 +95,7 @@ impl App {
 
     fn restart(&mut self) {
         let _ = self.settings.save();
+        self.min_games = self.settings.folders().min_games_for_winrate;
         self.worker = Worker::start(self.settings.clone());
         self.draft = None;
     }
@@ -318,18 +319,18 @@ impl App {
 
                 let most = heroes.iter().map(|h| h.games).max().unwrap_or(1).max(1);
                 for hero in heroes {
-                    draw_hero(ui, hero, most);
+                    draw_hero(ui, hero, most, self.min_games);
                 }
             });
     }
 }
 
 /// The bar is the games, its colour the winrate, so a pool reads without being read.
-fn draw_hero(ui: &mut egui::Ui, hero: &hots_core::HeroRow, most: u32) {
+fn draw_hero(ui: &mut egui::Ui, hero: &hots_core::HeroRow, most: u32, min_games: u32) {
     let rate = hero.winrate().unwrap_or(0.0);
-    let color = theme::winrate_color(hero.games, rate, MIN_GAMES);
+    let color = theme::winrate_color(hero.games, rate, min_games);
     let rate_text = match hero.winrate() {
-        Some(rate) if hero.games >= MIN_GAMES => format!("{:.0}%", rate * 100.0),
+        Some(rate) if hero.games >= min_games => format!("{:.0}%", rate * 100.0),
         _ => "-".to_string(),
     };
 

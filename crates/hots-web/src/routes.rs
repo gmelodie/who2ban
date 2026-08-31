@@ -29,7 +29,14 @@ pub async fn get_config(State(app): State<Arc<App>>) -> Json<Config> {
     Json(app.config())
 }
 
+/// The folders belong to the machine the server runs on, not to whoever opened the page.
 pub async fn put_config(State(app): State<Arc<App>>, Json(cfg): Json<Config>) -> Reply<()> {
+    let here = app.config();
+    let cfg = Config {
+        replay_dir: here.replay_dir,
+        temp_dir: here.temp_dir,
+        ..cfg
+    };
     cfg.save()?;
     app.set_config(cfg);
     Ok(Json(()))

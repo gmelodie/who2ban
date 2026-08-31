@@ -16,7 +16,8 @@ if [ ! -f "$FALLBACK/fullchain.pem" ]; then
         -out "$FALLBACK/fullchain.pem" 2>/dev/null
 fi
 
-printf '%s:%s\n' "$BASIC_USER" "$(openssl passwd -apr1 "$BASIC_PASS")" > /etc/nginx/htpasswd
+hash="$(printf '%s\n' "$BASIC_PASS" | openssl passwd -apr1 -stdin)"
+printf '%s:%s\n' "$BASIC_USER" "$hash" > /etc/nginx/htpasswd
 
 write_config() {
     if [ -f "$LIVE/fullchain.pem" ]; then
