@@ -27,16 +27,21 @@ pub fn build(db: &Db, cfg: &Config, lobby: &Lobby, me: Option<&str>) -> Result<D
 }
 
 /// The stored name may carry no discriminator, so a name on its own still finds a seat.
+/// Two passes, because names repeat: an exact battletag anywhere in the lobby outranks
+/// somebody else who merely shares your name and happens to sit in an earlier slot.
 fn team_of(lobby: &Lobby, me: &str) -> Option<u8> {
     let name = me.split_once('#').map_or(me, |(n, _)| n);
-    lobby
+    let exact = lobby
         .players
         .iter()
-        .find(|p| {
-            p.battletag.eq_ignore_ascii_case(me)
-                || p.battletag
+        .find(|p| p.battletag.eq_ignore_ascii_case(me));
+    exact
+        .or_else(|| {
+            lobby.players.iter().find(|p| {
+                p.battletag
                     .split_once('#')
                     .is_some_and(|(n, _)| n.eq_ignore_ascii_case(name))
+            })
         })
         .map(|p| p.team)
 }
@@ -56,6 +61,7 @@ pub fn player_row(
         slot,
         team,
         enemy,
+        note: db.note(battletag)?,
         games: local.iter().map(|h| h.games).sum(),
         heroes: hero_rows(local, cfg.max_heroes),
     })

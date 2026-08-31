@@ -41,12 +41,15 @@ pub fn replay_bytes(bytes: Vec<u8>) -> Result<MatchRecord> {
         .map(|(entry, battletag)| player(entry, battletag))
         .collect::<Result<Vec<_>>>()?;
 
+    let init = init_data(protocol, &archive);
+
     Ok(MatchRecord {
         players,
         map: text(&details, "m_title").unwrap_or_default(),
-        mode: mode_of(protocol, &archive),
+        mode: init.as_ref().map_or(GameMode::Unknown, mode_of),
         played_at: unix_time(int(&details, "m_timeUTC").unwrap_or(0)),
         build: base,
+        game_id: init.as_ref().and_then(game_id),
     })
 }
 
@@ -126,12 +129,23 @@ fn by_name(name: &str, tags: &[String]) -> Option<String> {
     }
 }
 
-fn mode_of(protocol: &Protocol, archive: &heroprotocol::mpq::Archive) -> GameMode {
-    let Ok(init) = stream(archive, "replay.initData")
+fn init_data(protocol: &Protocol, archive: &heroprotocol::mpq::Archive) -> Option<Value> {
+    stream(archive, "replay.initData")
         .and_then(|bytes| Ok(protocol.decode_replay_initdata(&bytes)?))
-    else {
-        return GameMode::Unknown;
-    };
+        .ok()
+}
+
+/// The seed the server picks for the match and sends to every client, which makes it the
+/// one field ten replays of one game agree on exactly.
+fn game_id(init: &Value) -> Option<u64> {
+    init.get("m_syncLobbyState")
+        .and_then(|s| s.get("m_gameDescription"))
+        .and_then(|d| d.get("m_randomValue"))
+        .and_then(Value::as_i64)
+        .map(|seed| seed as u64)
+}
+
+fn mode_of(init: &Value) -> GameMode {
     let Some(options) = init
         .get("m_syncLobbyState")
         .and_then(|s| s.get("m_gameDescription"))
