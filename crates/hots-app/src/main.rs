@@ -34,7 +34,8 @@ fn main() -> eframe::Result {
 
 struct App {
     settings: Settings,
-    worker: Worker,
+    login: Option<Login>,
+    worker: Option<Worker>,
     draft: Option<Draft>,
     temp: Option<String>,
     replay_dirs: usize,
@@ -52,7 +53,8 @@ impl App {
     fn new() -> App {
         let settings = Settings::load();
         App {
-            worker: Worker::start(settings.clone()),
+            login: settings.needs_login().then(|| Login::of(&settings)),
+            worker: (!settings.needs_login()).then(|| Worker::start(settings.clone())),
             editing: settings.battletag.is_empty(),
             min_games: settings.folders().min_games_for_winrate,
             settings,
@@ -68,7 +70,11 @@ impl App {
     }
 
     fn drain(&mut self) {
-        while let Ok(report) = self.worker.reports.try_recv() {
+        let reports: Vec<Report> = match &self.worker {
+            Some(worker) => worker.reports.try_iter().collect(),
+            None => Vec::new(),
+        };
+        for report in reports {
             match report {
                 Report::Store(store) => self.store = store,
                 Report::Folders { temp, replays } => {
@@ -86,6 +92,10 @@ impl App {
                 Report::Lobby(draft) => self.draft = Some(*draft),
                 Report::Failed(e) => {
                     tracing::warn!("{e}");
+                    if e.contains(store::REJECTED) {
+                        self.log_out(Some(e));
+                        return;
+                    }
                     self.errors.push(e);
                     self.errors.truncate(20);
                 }
@@ -96,9 +106,145 @@ impl App {
     fn restart(&mut self) {
         let _ = self.settings.save();
         self.min_games = self.settings.folders().min_games_for_winrate;
-        self.worker = Worker::start(self.settings.clone());
+        self.worker = Some(Worker::start(self.settings.clone()));
         self.draft = None;
     }
+
+    fn log_out(&mut self, why: Option<String>) {
+        self.settings.password.clear();
+        let _ = self.settings.save();
+        self.worker = None;
+        self.draft = None;
+        self.errors.clear();
+        self.login = Some(Login {
+            error: why,
+            ..Login::of(&self.settings)
+        });
+    }
+}
+
+/// The shared server answers nothing without a login, so the app asks for one before it starts.
+struct Login {
+    server: String,
+    username: String,
+    password: String,
+    asking: Option<std::sync::mpsc::Receiver<Result<(), String>>>,
+    error: Option<String>,
+}
+
+impl Login {
+    fn of(settings: &Settings) -> Login {
+        Login {
+            server: settings.server.clone().unwrap_or_default(),
+            username: settings.username.clone(),
+            password: String::new(),
+            asking: None,
+            error: None,
+        }
+    }
+
+    /// One request the login screen waits on, off the thread that paints it.
+    fn ask(settings: Settings) -> std::sync::mpsc::Receiver<Result<(), String>> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let tried = store::Store::open(&settings)
+                .map_err(|e| e.to_string())
+                .and_then(|store| store.count())
+                .map(drop);
+            let _ = tx.send(tried);
+        });
+        rx
+    }
+}
+
+impl App {
+    fn login_screen(&mut self, ui: &mut egui::Ui) {
+        let Some(login) = &mut self.login else {
+            return;
+        };
+
+        let mut submit = false;
+        egui::CentralPanel::default()
+            .frame(theme::central(ui.style()))
+            .show(ui, |ui| {
+                ui.add_space(80.0);
+                ui.vertical_centered(|ui| {
+                    ui.label(
+                        egui::RichText::new("DRAFT HELPER")
+                            .size(22.0)
+                            .strong()
+                            .color(theme::YELLOW),
+                    );
+                    ui.add_space(2.0);
+                    ui.label(
+                        egui::RichText::new("the shared database asks who you are")
+                            .color(theme::DIM),
+                    );
+                    ui.add_space(18.0);
+
+                    egui::Grid::new("login-grid")
+                        .spacing([12.0, 10.0])
+                        .show(ui, |ui| {
+                            ui.label("server");
+                            ui.text_edit_singleline(&mut login.server);
+                            ui.end_row();
+
+                            ui.label("username");
+                            submit |= entered(ui.text_edit_singleline(&mut login.username));
+                            ui.end_row();
+
+                            ui.label("password");
+                            let field = ui.add(
+                                egui::TextEdit::singleline(&mut login.password).password(true),
+                            );
+                            submit |= entered(field);
+                            ui.end_row();
+                        });
+
+                    ui.add_space(14.0);
+                    match login.asking.is_some() {
+                        true => {
+                            ui.add(egui::Spinner::new().size(20.0).color(theme::YELLOW));
+                        }
+                        false => submit |= ui.button("log in").clicked(),
+                    }
+
+                    if let Some(error) = &login.error {
+                        ui.add_space(10.0);
+                        ui.label(egui::RichText::new(error).color(theme::RED));
+                    }
+                });
+            });
+
+        if submit && login.asking.is_none() {
+            login.error = None;
+            self.settings.server = Some(login.server.clone());
+            self.settings.username = login.username.clone();
+            self.settings.password = login.password.clone();
+            login.asking = Some(Login::ask(self.settings.clone()));
+        }
+
+        let answer = login
+            .asking
+            .as_ref()
+            .and_then(|asking| asking.try_recv().ok());
+        match answer {
+            Some(Ok(())) => {
+                self.login = None;
+                self.restart();
+            }
+            Some(Err(e)) => {
+                login.asking = None;
+                login.error = Some(e);
+            }
+            None => {}
+        }
+    }
+}
+
+/// Enter in a field is the same as the button, which is what a login screen owes anyone.
+fn entered(field: egui::Response) -> bool {
+    field.lost_focus() && field.ctx.input(|i| i.key_pressed(egui::Key::Enter))
 }
 
 impl eframe::App for App {
@@ -107,63 +253,72 @@ impl eframe::App for App {
         ui.ctx()
             .request_repaint_after(std::time::Duration::from_millis(250));
 
-        egui::Panel::top("top").show(ui, |ui| {
-            ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new("DRAFT HELPER")
-                        .size(17.0)
-                        .strong()
-                        .color(theme::YELLOW),
-                );
-                ui.label(
-                    egui::RichText::new(format!("{} matches", self.matches)).color(theme::DIM),
-                );
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("settings").clicked() {
-                        self.editing = !self.editing;
-                    }
-                    ui.checkbox(&mut self.sort_by_winrate, "sort by winrate");
+        if self.login.is_some() {
+            self.login_screen(ui);
+            return;
+        }
+
+        egui::Panel::top("top")
+            .frame(theme::panel(ui.style()))
+            .show(ui, |ui| {
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new("DRAFT HELPER")
+                            .size(17.0)
+                            .strong()
+                            .color(theme::YELLOW),
+                    );
+                    ui.label(
+                        egui::RichText::new(format!("{} matches", self.matches)).color(theme::DIM),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("settings").clicked() {
+                            self.editing = !self.editing;
+                        }
+                        ui.checkbox(&mut self.sort_by_winrate, "sort by winrate");
+                    });
                 });
-            });
 
-            ui.horizontal(|ui| {
-                let (label, color) = match &self.temp {
-                    Some(path) => (path.as_str(), theme::GREEN),
-                    None => ("no temp folder found, set it in settings", theme::RED),
-                };
-                ui.label(egui::RichText::new("\u{25cf}").color(color));
-                ui.label(egui::RichText::new(label).monospace().color(theme::DIM));
-            });
+                ui.horizontal(|ui| {
+                    let (label, color) = match &self.temp {
+                        Some(path) => (path.as_str(), theme::GREEN),
+                        None => ("no temp folder found, set it in settings", theme::RED),
+                    };
+                    ui.label(egui::RichText::new("\u{25cf}").color(color));
+                    ui.label(egui::RichText::new(label).monospace().color(theme::DIM));
+                });
 
-            self.progress_bar(ui);
-            ui.add_space(6.0);
-        });
+                self.progress_bar(ui);
+                ui.add_space(6.0);
+            });
 
         if self.editing {
             self.settings_panel(ui);
         }
         self.errors_panel(ui);
 
-        egui::CentralPanel::default().show(ui, |ui| match &self.draft {
-            Some(draft) => self.draw_draft(ui, draft),
-            None => {
-                ui.add_space(60.0);
-                ui.vertical_centered(|ui| {
-                    ui.add(egui::Spinner::new().size(28.0).color(theme::YELLOW));
-                    ui.add_space(10.0);
-                    ui.label(
-                        egui::RichText::new("Waiting for a lobby")
-                            .size(16.0)
-                            .color(theme::TEXT),
-                    );
-                    ui.label(
-                        egui::RichText::new("start a game and the enemy pools appear here")
-                            .color(theme::DIM),
-                    );
-                });
-            }
-        });
+        egui::CentralPanel::default()
+            .frame(theme::central(ui.style()))
+            .show(ui, |ui| match &self.draft {
+                Some(draft) => self.draw_draft(ui, draft),
+                None => {
+                    ui.add_space(60.0);
+                    ui.vertical_centered(|ui| {
+                        ui.add(egui::Spinner::new().size(28.0).color(theme::YELLOW));
+                        ui.add_space(10.0);
+                        ui.label(
+                            egui::RichText::new("Waiting for a lobby")
+                                .size(16.0)
+                                .color(theme::TEXT),
+                        );
+                        ui.label(
+                            egui::RichText::new("start a game and the enemy pools appear here")
+                                .color(theme::DIM),
+                        );
+                    });
+                }
+            });
     }
 }
 
@@ -188,67 +343,86 @@ impl App {
     }
 
     fn settings_panel(&mut self, ui: &mut egui::Ui) {
-        egui::Panel::top("settings").show(ui, |ui| {
-            egui::Grid::new("settings-grid").show(ui, |ui| {
-                ui.label("your battletag");
-                ui.text_edit_singleline(&mut self.settings.battletag);
-                ui.end_row();
+        let mut log_out = false;
+        egui::Panel::top("settings")
+            .frame(theme::panel(ui.style()))
+            .show(ui, |ui| {
+                egui::Grid::new("settings-grid").show(ui, |ui| {
+                    ui.label("your battletag");
+                    ui.text_edit_singleline(&mut self.settings.battletag);
+                    ui.end_row();
 
-                ui.label("shared server");
-                let mut server = self.settings.server.clone().unwrap_or_default();
-                if ui.text_edit_singleline(&mut server).changed() {
-                    self.settings.server = Some(server).filter(|url| !url.is_empty());
-                }
-                ui.label("clear it to keep the database on this machine");
-                ui.end_row();
+                    ui.label("shared server");
+                    let mut server = self.settings.server.clone().unwrap_or_default();
+                    if ui.text_edit_singleline(&mut server).changed() {
+                        self.settings.server = Some(server);
+                    }
+                    ui.label("empty to keep the database on this machine");
+                    ui.end_row();
 
-                ui.label("replay folder");
-                folder_row(ui, &mut self.settings.replay_dir);
-                ui.label(format!("{} found automatically", self.replay_dirs));
-                ui.end_row();
+                    ui.label("logged in as");
+                    ui.horizontal(|ui| {
+                        let who = match self.settings.username.is_empty() {
+                            true => "nobody",
+                            false => self.settings.username.as_str(),
+                        };
+                        ui.label(egui::RichText::new(who).color(theme::TEXT));
+                        log_out = ui.button("log out").clicked();
+                    });
+                    ui.end_row();
 
-                ui.label("temp folder");
-                folder_row(ui, &mut self.settings.temp_dir);
-                ui.end_row();
+                    ui.label("replay folder");
+                    folder_row(ui, &mut self.settings.replay_dir);
+                    ui.label(format!("{} found automatically", self.replay_dirs));
+                    ui.end_row();
+
+                    ui.label("temp folder");
+                    folder_row(ui, &mut self.settings.temp_dir);
+                    ui.end_row();
+                });
+                ui.horizontal(|ui| {
+                    if ui.button("save and restart the watcher").clicked() {
+                        self.restart();
+                        self.editing = false;
+                    }
+                    ui.monospace(Settings::path().display().to_string());
+                    ui.label("database");
+                    ui.monospace(&self.store);
+                });
+                ui.add_space(4.0);
             });
-            ui.horizontal(|ui| {
-                if ui.button("save and restart the watcher").clicked() {
-                    self.restart();
-                    self.editing = false;
-                }
-                ui.monospace(Settings::path().display().to_string());
-                ui.label("database");
-                ui.monospace(&self.store);
-            });
-            ui.add_space(4.0);
-        });
+        if log_out {
+            self.log_out(None);
+        }
     }
 
     fn errors_panel(&mut self, ui: &mut egui::Ui) {
         if self.errors.is_empty() {
             return;
         }
-        egui::Panel::bottom("errors").show(ui, |ui| {
-            ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new(format!("{} problems", self.errors.len()))
-                        .color(theme::RED),
-                );
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("clear").clicked() {
-                        self.errors.clear();
-                    }
+        egui::Panel::bottom("errors")
+            .frame(theme::panel(ui.style()))
+            .show(ui, |ui| {
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(format!("{} problems", self.errors.len()))
+                            .color(theme::RED),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("clear").clicked() {
+                            self.errors.clear();
+                        }
+                    });
                 });
+                egui::ScrollArea::vertical()
+                    .max_height(90.0)
+                    .show(ui, |ui| {
+                        for line in self.errors.iter().rev() {
+                            ui.label(egui::RichText::new(line).monospace().color(theme::RED));
+                        }
+                    });
             });
-            egui::ScrollArea::vertical()
-                .max_height(90.0)
-                .show(ui, |ui| {
-                    for line in self.errors.iter().rev() {
-                        ui.label(egui::RichText::new(line).monospace().color(theme::RED));
-                    }
-                });
-        });
     }
 
     fn draw_draft(&self, ui: &mut egui::Ui, draft: &Draft) {

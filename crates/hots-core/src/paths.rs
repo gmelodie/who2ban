@@ -49,8 +49,9 @@ pub fn found_temp_root(cfg: &Config) -> Option<PathBuf> {
         return Some(PathBuf::from(dir));
     }
 
+    // Windows holds one temp folder, so the answer stands before the game first runs.
     let native = std::env::temp_dir().join(TEMP_SUBDIR);
-    if native.is_dir() {
+    if native.is_dir() || cfg!(windows) {
         return Some(native);
     }
     let home = dirs::home_dir();

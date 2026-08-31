@@ -12,6 +12,8 @@ pub const DEFAULT_SERVER: &str = "https://hots.gmelodie.com";
 pub struct Settings {
     pub battletag: String,
     pub server: Option<String>,
+    pub username: String,
+    pub password: String,
     pub replay_dir: Option<PathBuf>,
     pub temp_dir: Option<PathBuf>,
 }
@@ -21,6 +23,8 @@ impl Default for Settings {
         Settings {
             battletag: String::new(),
             server: Some(DEFAULT_SERVER.to_string()),
+            username: String::new(),
+            password: String::new(),
             replay_dir: None,
             temp_dir: None,
         }
@@ -30,6 +34,15 @@ impl Default for Settings {
 impl Settings {
     pub fn path() -> PathBuf {
         hots_core::paths::data_dir().join("app.toml")
+    }
+
+    /// A server that nobody has logged into yet answers every request with 401.
+    pub fn needs_login(&self) -> bool {
+        self.shared_server().is_some() && (self.username.is_empty() || self.password.is_empty())
+    }
+
+    pub fn shared_server(&self) -> Option<&str> {
+        self.server.as_deref().filter(|url| !url.is_empty())
     }
 
     pub fn load() -> Settings {
