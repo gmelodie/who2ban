@@ -31,10 +31,27 @@ impl Drop for Watchers {
 /// The temp folder appears when the game launches, so a path resolved before that is a guess.
 const RESOLVE_EVERY: Duration = Duration::from_secs(10);
 
-fn lobby_path(cfg: &Config) -> PathBuf {
-    paths::temp_root(cfg)
-        .join("TempWriteReplayP1")
-        .join(paths::BATTLELOBBY_NAME)
+/// The subfolder the client writes the live lobby into.
+const LOBBY_DIR: &str = "TempWriteReplayP1";
+
+fn lobby_paths(cfg: &Config) -> Vec<PathBuf> {
+    paths::temp_roots(cfg)
+        .into_iter()
+        .map(|root| root.join(LOBBY_DIR).join(paths::BATTLELOBBY_NAME))
+        .collect()
+}
+
+/// The lobby of whichever prefix wrote one last. An empty file is one the client has
+/// created but not filled yet, which parses as noise.
+fn newest_lobby(paths: &[PathBuf]) -> Option<(PathBuf, u64, SystemTime)> {
+    paths
+        .iter()
+        .filter_map(|path| {
+            let meta = std::fs::metadata(path).ok()?;
+            Some((path.clone(), meta.len(), meta.modified().ok()?))
+        })
+        .filter(|(_, len, _)| *len > 0)
+        .max_by_key(|(_, _, modified)| *modified)
 }
 
 /// The lobby uses a stat loop: the client deletes its temp folder on exit, which kills a watch.
@@ -94,30 +111,28 @@ fn start_lobby_poll(cfg: &Config, tx: Sender<WatchEvent>, stop: Arc<AtomicBool>)
     let cfg = cfg.clone();
 
     std::thread::spawn(move || {
-        let mut path = lobby_path(&cfg);
+        let mut paths = lobby_paths(&cfg);
         let mut looked = Instant::now();
-        let mut last: Option<(u64, SystemTime)> = None;
+        let mut last: Option<(PathBuf, u64, SystemTime)> = None;
         while !stop.load(Ordering::Relaxed) {
             std::thread::sleep(Duration::from_millis(400));
-            let Ok(meta) = std::fs::metadata(&path) else {
+            // The game creates its temp folder at launch, so the folders that exist
+            // now are not the folders that existed when this thread started.
+            if looked.elapsed() >= RESOLVE_EVERY {
+                looked = Instant::now();
+                paths = lobby_paths(&cfg);
+            }
+            let Some(found) = newest_lobby(&paths) else {
                 last = None;
-                if looked.elapsed() >= RESOLVE_EVERY {
-                    looked = Instant::now();
-                    path = lobby_path(&cfg);
-                }
                 continue;
             };
-            let Ok(modified) = meta.modified() else {
-                continue;
-            };
-            let stamp = (meta.len(), modified);
-            if last == Some(stamp) || meta.len() == 0 {
+            if last.as_ref() == Some(&found) {
                 continue;
             }
-            let Ok(bytes) = std::fs::read(&path) else {
+            let Ok(bytes) = std::fs::read(&found.0) else {
                 continue;
             };
-            last = Some(stamp);
+            last = Some(found);
             if tx.send(WatchEvent::Lobby(bytes)).is_err() {
                 return;
             }

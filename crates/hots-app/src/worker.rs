@@ -60,8 +60,8 @@ fn run(settings: Settings, tx: Sender<Report>, stop: Arc<AtomicBool>) {
         replays: paths::replay_dirs(&cfg).len(),
     });
 
-    backfill(&store, &cfg, &tx, &stop);
-
+    // The draft is what anyone opens this program for, so the watch starts before the
+    // upload does. A backfill of a thousand replays must not blind it through a draft.
     let (events, rx) = channel();
     let _watchers = match watch::start(&cfg, events) {
         Ok(watchers) => watchers,
@@ -69,28 +69,49 @@ fn run(settings: Settings, tx: Sender<Report>, stop: Arc<AtomicBool>) {
     };
 
     let me = Some(settings.battletag.clone()).filter(|tag| !tag.is_empty());
+    backfill(&store, &cfg, &tx, &stop, &rx, me.as_deref());
+
     while !stop.load(Ordering::Relaxed) {
         let event = match rx.recv_timeout(Duration::from_millis(250)) {
             Ok(event) => event,
             Err(RecvTimeoutError::Timeout) => continue,
             Err(RecvTimeoutError::Disconnected) => return,
         };
-        match event {
-            WatchEvent::Replay(path) => {
-                submit(&store, &path, &tx);
-            }
-            WatchEvent::Lobby(bytes) => match hots_parse::battlelobby(&bytes) {
-                Ok(lobby) => match store.draft(&cfg, &lobby, me.as_deref()) {
-                    Ok(draft) => drop(tx.send(Report::Lobby(Box::new(draft)))),
-                    Err(e) => drop(tx.send(Report::Failed(e))),
-                },
-                Err(e) => drop(tx.send(Report::Failed(format!("lobby: {e}")))),
-            },
-        }
+        handle(&store, &cfg, &tx, me.as_deref(), event);
     }
 }
 
-fn backfill(store: &Store, cfg: &hots_core::Config, tx: &Sender<Report>, stop: &AtomicBool) {
+fn handle(
+    store: &Store,
+    cfg: &hots_core::Config,
+    tx: &Sender<Report>,
+    me: Option<&str>,
+    event: WatchEvent,
+) {
+    match event {
+        WatchEvent::Replay(path) => {
+            submit(store, &path, tx);
+        }
+        WatchEvent::Lobby(bytes) => match hots_parse::battlelobby(&bytes) {
+            Ok(lobby) => match store.draft(cfg, &lobby, me) {
+                Ok(draft) => drop(tx.send(Report::Lobby(Box::new(draft)))),
+                Err(e) => drop(tx.send(Report::Failed(e))),
+            },
+            Err(e) => drop(tx.send(Report::Failed(format!("lobby: {e}")))),
+        },
+    }
+}
+
+/// Every replay the store has not seen. A lobby that forms while this runs is answered
+/// between files rather than after the last one.
+fn backfill(
+    store: &Store,
+    cfg: &hots_core::Config,
+    tx: &Sender<Report>,
+    stop: &AtomicBool,
+    events: &Receiver<WatchEvent>,
+    me: Option<&str>,
+) {
     let known = match store.known() {
         Ok(known) => known,
         Err(e) => return drop(tx.send(Report::Failed(e))),
@@ -107,6 +128,9 @@ fn backfill(store: &Store, cfg: &hots_core::Config, tx: &Sender<Report>, stop: &
     for (done, path) in files.iter().enumerate() {
         if stop.load(Ordering::Relaxed) {
             return;
+        }
+        for event in events.try_iter() {
+            handle(store, cfg, tx, me, event);
         }
         if !submit(store, path, tx) {
             failed += 1;

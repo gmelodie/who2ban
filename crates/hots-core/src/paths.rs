@@ -39,29 +39,38 @@ pub fn db_path() -> PathBuf {
     data_dir().join("hots.db")
 }
 
-/// Root the client recreates on every launch and deletes on exit. `None` when this
-/// machine holds no game at all, which a guess would only disguise.
-pub fn found_temp_root(cfg: &Config) -> Option<PathBuf> {
+/// Every folder the client might be using, best guess first. A machine with two wine
+/// prefixes offers two answers and only the one the game is running under holds a
+/// lobby, so the caller watches all of them rather than betting on the first.
+pub fn temp_roots(cfg: &Config) -> Vec<PathBuf> {
     if let Some(dir) = &cfg.temp_dir {
-        return Some(dir.clone());
+        return vec![dir.clone()];
     }
     if let Ok(dir) = std::env::var("HOTS_TEMP_DIR") {
-        return Some(PathBuf::from(dir));
+        return vec![PathBuf::from(dir)];
     }
 
     // Windows holds one temp folder, so the answer stands before the game first runs.
     let native = std::env::temp_dir().join(TEMP_SUBDIR);
     if native.is_dir() || cfg!(windows) {
-        return Some(native);
+        return vec![native];
     }
     let home = dirs::home_dir();
-    replay_dirs(cfg)
-        .iter()
-        .filter_map(|dir| temp_beside(dir))
+    let found = replay_dirs(cfg)
+        .into_iter()
+        .filter_map(|dir| temp_beside(&dir))
         .chain(home_temp_roots(home.as_deref()))
         .chain(temps_of(named_prefix_users()))
-        .chain(wine_temp_roots(home.as_deref()))
-        .next()
+        .chain(wine_temp_roots(home.as_deref()));
+
+    let mut seen = std::collections::HashSet::new();
+    found.filter(|dir| seen.insert(dir.clone())).collect()
+}
+
+/// Root the client recreates on every launch and deletes on exit. `None` when this
+/// machine holds no game at all, which a guess would only disguise.
+pub fn found_temp_root(cfg: &Config) -> Option<PathBuf> {
+    temp_roots(cfg).into_iter().next()
 }
 
 pub fn temp_root(cfg: &Config) -> PathBuf {
