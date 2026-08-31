@@ -100,3 +100,13 @@ pub struct MatchRecord {
     pub played_at: i64,
     pub build: u32,
 }
+
+impl MatchRecord {
+    /// The same game from ten different machines, under ten different file names, since
+    /// the client names a replay by the local clock of whoever played it.
+    pub fn fingerprint(&self) -> String {
+        let mut handles: Vec<String> = self.players.iter().map(MatchPlayer::handle).collect();
+        handles.sort();
+        format!("{}/{}", self.played_at, handles.join(","))
+    }
+}

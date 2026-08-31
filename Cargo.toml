@@ -1,6 +1,12 @@
 [workspace]
 resolver = "3"
-members = ["crates/hots-parse", "crates/hots-core", "crates/hots-cli", "crates/hots-web"]
+members = [
+    "crates/hots-parse",
+    "crates/hots-core",
+    "crates/hots-cli",
+    "crates/hots-web",
+    "crates/hots-app",
+]
 
 [workspace.package]
 version = "0.1.0"
@@ -14,6 +20,8 @@ heroprotocol = { git = "https://github.com/gmelodie/rs-heroprotocol", rev = "fda
 
 anyhow = "1"
 axum = "0.8"
+eframe = { version = "0.36", default-features = false, features = ["glow", "default_fonts", "wayland", "x11"] }
+egui = "0.36"
 clap = { version = "4", features = ["derive"] }
 dirs = "6"
 notify = "8"
@@ -24,6 +32,7 @@ thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "signal"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 toml = "1"
+ureq = { version = "3.4.0", features = ["json"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 walkdir = "2"

@@ -52,7 +52,10 @@ fn main() -> Result<()> {
             let id = ingest::ingest_file(&db, &path)?;
             println!(
                 "{}",
-                id.map_or("already stored".into(), |i| format!("match {i}"))
+                id.map_or_else(
+                    || "already stored, another replay of the same match".to_string(),
+                    |i| format!("match {i}")
+                )
             );
         }
         Cmd::Player { battletag } => player(&db, &cfg, &battletag)?,
@@ -76,6 +79,7 @@ fn show_config(cfg: &Config, db: &Db) -> Result<()> {
         println!("replays     {}", dir.display());
     }
     println!("matches     {}", db.match_count()?);
+    println!("files       {}", db.file_count()?);
     println!("failed      {}", db.error_count()?);
     Ok(())
 }
