@@ -5,7 +5,7 @@ use std::sync::Mutex;
 use hots_parse::MatchRecord;
 use rusqlite::{Connection, OptionalExtension, params};
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 
 const SCHEMA: &str = r#"
 PRAGMA journal_mode = WAL;
@@ -13,10 +13,15 @@ PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS matches(
     id          INTEGER PRIMARY KEY,
-    replay_path TEXT NOT NULL UNIQUE,
+    fingerprint TEXT NOT NULL UNIQUE,
     played_at   INTEGER NOT NULL,
     map         TEXT NOT NULL,
     mode        TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS replay_files(
+    path     TEXT PRIMARY KEY,
+    match_id INTEGER NOT NULL REFERENCES matches(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS match_players(
@@ -43,9 +48,64 @@ CREATE TABLE IF NOT EXISTS replay_errors(
 );
 "#;
 
-/// The stored shape changed with the identity of a player, and every row of it comes
-/// back from the replays on disk, so an old database is dropped rather than migrated.
-const SCHEMA_VERSION: i64 = 2;
+/// A database outlives every version of this program, so a step that cannot keep the
+/// rows copies the file aside before it touches anything.
+const SCHEMA_VERSION: i64 = 3;
+
+/// The shape before 3 held no fingerprint and no player handle, neither of which can be
+/// worked out from what it stored.
+const REBUILT_BELOW: i64 = 3;
+
+fn migrate(conn: &Connection, path: Option<&Path>) -> Result<()> {
+    let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version == SCHEMA_VERSION {
+        return Ok(());
+    }
+    if version > SCHEMA_VERSION {
+        return Err(Error::Other(format!(
+            "this database is version {version}, which is newer than this build understands"
+        )));
+    }
+
+    let fresh: i64 = conn.query_row(
+        "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'matches'",
+        [],
+        |r| r.get(0),
+    )?;
+    if fresh == 0 {
+        conn.execute_batch(SCHEMA)?;
+        conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+        return Ok(());
+    }
+
+    if version < REBUILT_BELOW {
+        let kept = keep_a_copy(path)?;
+        tracing::warn!(
+            version,
+            backup = kept.as_deref().unwrap_or("none"),
+            "rebuilding a database older than this build, the copy stays"
+        );
+        conn.execute_batch(
+            "DROP TABLE IF EXISTS match_players;
+             DROP TABLE IF EXISTS replay_files;
+             DROP TABLE IF EXISTS matches;",
+        )?;
+    }
+
+    conn.execute_batch(SCHEMA)?;
+    conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+    Ok(())
+}
+
+/// Nothing here removes a database. A step that has to reshape one leaves the old file behind.
+fn keep_a_copy(path: Option<&Path>) -> Result<Option<String>> {
+    let Some(path) = path.filter(|path| path.exists()) else {
+        return Ok(None);
+    };
+    let backup = path.with_extension(format!("before-v{SCHEMA_VERSION}.db"));
+    std::fs::copy(path, &backup)?;
+    Ok(Some(backup.display().to_string()))
+}
 
 pub fn now() -> i64 {
     std::time::SystemTime::now()
@@ -61,6 +121,15 @@ pub struct LocalHero {
     pub wins: u32,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct MatchSummary {
+    pub played_at: i64,
+    pub map: String,
+    pub mode: String,
+    pub players: u32,
+    pub files: u32,
+}
+
 pub struct Db {
     conn: Mutex<Connection>,
 }
@@ -70,22 +139,15 @@ impl Db {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        Db::from_conn(Connection::open(path)?)
+        Db::from_conn(Connection::open(path)?, Some(path))
     }
 
     pub fn open_memory() -> Result<Db> {
-        Db::from_conn(Connection::open_in_memory()?)
+        Db::from_conn(Connection::open_in_memory()?, None)
     }
 
-    fn from_conn(conn: Connection) -> Result<Db> {
-        let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        if version < SCHEMA_VERSION {
-            conn.execute_batch(
-                "DROP TABLE IF EXISTS match_players; DROP TABLE IF EXISTS matches;",
-            )?;
-            conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
-        }
-        conn.execute_batch(SCHEMA)?;
+    fn from_conn(conn: Connection, path: Option<&Path>) -> Result<Db> {
+        migrate(&conn, path)?;
         Ok(Db {
             conn: Mutex::new(conn),
         })
@@ -97,7 +159,7 @@ impl Db {
 
     pub fn known_replays(&self) -> Result<HashSet<String>> {
         let conn = self.lock();
-        let mut stmt = conn.prepare("SELECT replay_path FROM matches")?;
+        let mut stmt = conn.prepare("SELECT path FROM replay_files")?;
         let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
         let mut set = HashSet::new();
         for row in rows {
@@ -111,19 +173,36 @@ impl Db {
         Ok(set)
     }
 
-    /// Insert a parsed replay. Returns `None` when the path is already stored.
+    /// Store a parsed replay. `None` when this match already came from another file,
+    /// which is the normal case when two people in one game both send theirs.
     pub fn record_replay(&self, path: &str, replay: &MatchRecord) -> Result<Option<i64>> {
+        let fingerprint = replay.fingerprint();
         let mut conn = self.lock();
         let tx = conn.transaction()?;
         let inserted = tx.execute(
-            "INSERT OR IGNORE INTO matches(replay_path, played_at, map, mode)
+            "INSERT OR IGNORE INTO matches(fingerprint, played_at, map, mode)
              VALUES(?1, ?2, ?3, ?4)",
-            params![path, replay.played_at, replay.map, replay.mode.as_str()],
+            params![
+                fingerprint,
+                replay.played_at,
+                replay.map,
+                replay.mode.as_str()
+            ],
+        )?;
+        let id: i64 = tx.query_row(
+            "SELECT id FROM matches WHERE fingerprint = ?1",
+            [&fingerprint],
+            |r| r.get(0),
+        )?;
+        tx.execute(
+            "INSERT OR IGNORE INTO replay_files(path, match_id) VALUES(?1, ?2)",
+            params![path, id],
         )?;
         if inserted == 0 {
+            tx.execute("DELETE FROM replay_errors WHERE replay_path = ?1", [path])?;
+            tx.commit()?;
             return Ok(None);
         }
-        let id = tx.last_insert_rowid();
         for p in &replay.players {
             tx.execute(
                 "INSERT OR REPLACE INTO match_players(match_id, handle, name, battletag, hero, team, won)
@@ -177,6 +256,34 @@ impl Db {
             )
             .optional()?;
         Ok(tag)
+    }
+
+    pub fn recent_matches(&self, limit: u32) -> Result<Vec<MatchSummary>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT m.played_at, m.map, m.mode,
+                    (SELECT count(*) FROM match_players p WHERE p.match_id = m.id),
+                    (SELECT count(*) FROM replay_files f WHERE f.match_id = m.id)
+             FROM matches m ORDER BY m.played_at DESC LIMIT ?1",
+        )?;
+        let rows = stmt.query_map([limit], |r| {
+            Ok(MatchSummary {
+                played_at: r.get(0)?,
+                map: r.get(1)?,
+                mode: r.get(2)?,
+                players: r.get::<_, i64>(3)? as u32,
+                files: r.get::<_, i64>(4)? as u32,
+            })
+        })?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
+    pub fn file_count(&self) -> Result<u32> {
+        let conn = self.lock();
+        let n = conn.query_row("SELECT count(*) FROM replay_files", [], |r| {
+            r.get::<_, i64>(0)
+        })?;
+        Ok(n as u32)
     }
 
     pub fn match_count(&self) -> Result<u32> {

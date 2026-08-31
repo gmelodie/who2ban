@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := up
-.PHONY: up down logs app-logs serve wasm test check dist
+.PHONY: up down logs app-logs serve app test check dist
 
 # https on 443, behind nginx and a Let's Encrypt certificate.
 up: .env
@@ -20,12 +20,13 @@ app-logs:
 	@echo "wrote .env from .env.example. Fill it in, then run make again."
 	@false
 
-# Local run without docker or tls, reachable at http://localhost:8731 only.
-serve: wasm
+# The admin console, without docker or tls, at http://localhost:8731.
+serve:
 	cargo run -p hots-web
 
-wasm:
-	cargo build -p hots-parse --release --target wasm32-unknown-unknown
+# The desktop app, which is what watches for a lobby.
+app:
+	cargo run -p hots-app
 
 test:
 	cargo test --workspace
@@ -33,9 +34,8 @@ test:
 check:
 	cargo fmt --all --check
 	cargo clippy --workspace --all-targets
-	cargo clippy -p hots-parse --target wasm32-unknown-unknown
 
-dist: wasm
-	cargo build --release -p hots-web
+dist:
+	cargo build --release -p hots-web -p hots-app
 	install -D target/release/hots-web dist/hots-web
-	install -D target/wasm32-unknown-unknown/release/hots_parse.wasm dist/hots_parse.wasm
+	install -D target/release/hots-app dist/hots-app

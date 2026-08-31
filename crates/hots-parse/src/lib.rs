@@ -1,9 +1,6 @@
 pub mod model;
 pub mod parse;
 
-#[cfg(target_arch = "wasm32")]
-mod wasm;
-
 pub use model::{GameMode, Lobby, LobbyPlayer, MatchPlayer, MatchRecord, Toon};
 pub use parse::{battlelobby, lobby_stream, replay, replay_bytes};
 

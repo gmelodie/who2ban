@@ -9,6 +9,12 @@ fn toon(region: u8, id: u64) -> Toon {
     }
 }
 
+/// Three games of one player differ by when they happened, which is what a fingerprint uses.
+fn at(mut record: MatchRecord, minutes: i64) -> MatchRecord {
+    record.played_at += minutes * 60;
+    record
+}
+
 fn replay(mode: GameMode, picks: &[(&str, &str, u8, bool)]) -> MatchRecord {
     MatchRecord {
         players: picks
@@ -40,22 +46,72 @@ fn records_a_replay_once() {
     assert_eq!(db.match_count().unwrap(), 1);
 }
 
+/// Two people in one game each send their own file, named by their own clock.
+#[test]
+fn one_game_counts_once_however_many_people_send_it() {
+    let db = Db::open_memory().unwrap();
+    let game = replay(
+        GameMode::StormLeague,
+        &[("Me#1", "Raynor", 0, true), ("Friend#2", "Jaina", 0, true)],
+    );
+
+    assert!(
+        db.record_replay("2026-08-30 17.05.46 Alterac.StormReplay", &game)
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        db.record_replay("2026-08-30 22.05.46 Alterac.StormReplay", &game)
+            .unwrap()
+            .is_none(),
+        "the same game under another clock is not a second game"
+    );
+
+    assert_eq!(db.match_count().unwrap(), 1);
+    assert_eq!(db.file_count().unwrap(), 2, "both files are remembered");
+    assert_eq!(
+        db.known_replays().unwrap().len(),
+        2,
+        "so neither is parsed again"
+    );
+
+    let heroes = db.local_heroes("Me#1", true).unwrap();
+    assert_eq!(heroes[0].games, 1, "one game, not two");
+}
+
+#[test]
+fn two_different_games_stay_apart() {
+    let db = Db::open_memory().unwrap();
+    let one = replay(GameMode::StormLeague, &[("Me#1", "Raynor", 0, true)]);
+    let mut two = one.clone();
+    two.played_at += 1800;
+
+    db.record_replay("a.StormReplay", &one).unwrap();
+    assert!(db.record_replay("b.StormReplay", &two).unwrap().is_some());
+    assert_eq!(db.match_count().unwrap(), 2);
+    assert_eq!(db.local_heroes("Me#1", true).unwrap()[0].games, 2);
+}
+
 #[test]
 fn aggregates_local_heroes_and_filters_by_mode() {
     let db = Db::open_memory().unwrap();
+    let sl = GameMode::StormLeague;
     db.record_replay(
         "1.StormReplay",
-        &replay(GameMode::StormLeague, &[("Foe#1", "Raynor", 1, true)]),
+        &replay(sl, &[("Foe#1", "Raynor", 1, true)]),
     )
     .unwrap();
     db.record_replay(
         "2.StormReplay",
-        &replay(GameMode::StormLeague, &[("Foe#1", "Raynor", 1, false)]),
+        &at(replay(sl, &[("Foe#1", "Raynor", 1, false)]), 30),
     )
     .unwrap();
     db.record_replay(
         "3.StormReplay",
-        &replay(GameMode::QuickMatch, &[("Foe#1", "Muradin", 1, true)]),
+        &at(
+            replay(GameMode::QuickMatch, &[("Foe#1", "Muradin", 1, true)]),
+            60,
+        ),
     )
     .unwrap();
 
@@ -418,4 +474,59 @@ fn ignores_a_replay_folder_outside_a_prefix() {
         ))
         .is_none()
     );
+}
+
+/// An update must not cost anyone their history.
+#[test]
+fn a_database_survives_being_reopened() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("hots.db");
+
+    let db = Db::open(&path).unwrap();
+    db.record_replay(
+        "1.StormReplay",
+        &replay(GameMode::StormLeague, &[("Foe#1", "Raynor", 1, true)]),
+    )
+    .unwrap();
+    drop(db);
+
+    for _ in 0..3 {
+        let db = Db::open(&path).unwrap();
+        assert_eq!(db.match_count().unwrap(), 1, "the rows are still there");
+        assert_eq!(db.local_heroes("Foe#1", true).unwrap().len(), 1);
+    }
+    assert!(
+        !path.with_extension("before-v3.db").exists(),
+        "nothing to back up"
+    );
+}
+
+/// A shape this build cannot read is copied aside, never deleted in place.
+#[test]
+fn an_older_database_leaves_a_copy_behind() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("hots.db");
+    Db::open(&path).unwrap();
+
+    let old = rusqlite::Connection::open(&path).unwrap();
+    old.pragma_update(None, "user_version", 1).unwrap();
+    drop(old);
+
+    Db::open(&path).unwrap();
+    let backup = path.with_extension("before-v3.db");
+    assert!(backup.exists(), "the old file is kept");
+    assert!(std::fs::metadata(&backup).unwrap().len() > 0);
+}
+
+#[test]
+fn a_newer_database_is_left_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("hots.db");
+    Db::open(&path).unwrap();
+
+    let ahead = rusqlite::Connection::open(&path).unwrap();
+    ahead.pragma_update(None, "user_version", 99).unwrap();
+    drop(ahead);
+
+    assert!(Db::open(&path).is_err(), "a newer database is not touched");
 }

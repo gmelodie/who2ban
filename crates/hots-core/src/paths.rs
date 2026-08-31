@@ -39,18 +39,19 @@ pub fn db_path() -> PathBuf {
     data_dir().join("hots.db")
 }
 
-/// Root the client recreates on every launch and deletes on exit.
-pub fn temp_root(cfg: &Config) -> PathBuf {
+/// Root the client recreates on every launch and deletes on exit. `None` when this
+/// machine holds no game at all, which a guess would only disguise.
+pub fn found_temp_root(cfg: &Config) -> Option<PathBuf> {
     if let Some(dir) = &cfg.temp_dir {
-        return dir.clone();
+        return Some(dir.clone());
     }
     if let Ok(dir) = std::env::var("HOTS_TEMP_DIR") {
-        return PathBuf::from(dir);
+        return Some(PathBuf::from(dir));
     }
 
     let native = std::env::temp_dir().join(TEMP_SUBDIR);
     if native.is_dir() {
-        return native;
+        return Some(native);
     }
     let home = dirs::home_dir();
     replay_dirs(cfg)
@@ -60,7 +61,10 @@ pub fn temp_root(cfg: &Config) -> PathBuf {
         .chain(temps_of(named_prefix_users()))
         .chain(wine_temp_roots(home.as_deref()))
         .next()
-        .unwrap_or(native)
+}
+
+pub fn temp_root(cfg: &Config) -> PathBuf {
+    found_temp_root(cfg).unwrap_or_else(|| std::env::temp_dir().join(TEMP_SUBDIR))
 }
 
 /// Every `Accounts/<id>/<hero-id>/Replays/Multiplayer` the machine holds.

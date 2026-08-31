@@ -5,9 +5,6 @@ edition.workspace = true
 license.workspace = true
 description = "Replay and battlelobby parsing, buildable for wasm32"
 
-[lib]
-crate-type = ["cdylib", "rlib"]
-
 [dependencies]
 heroprotocol = { workspace = true }
 serde = { workspace = true }

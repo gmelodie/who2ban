@@ -1,17 +1,13 @@
 use std::sync::Arc;
 
+use crate::state::{App, Status};
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
-use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use hots_core::draft;
 use hots_core::{Config, Draft, Lobby, MatchRecord};
 use serde::{Deserialize, Serialize};
-use tokio_stream::wrappers::BroadcastStream;
-use tokio_stream::{Stream, StreamExt};
-
-use crate::state::{App, Status};
 
 pub struct Failed(String);
 
@@ -81,7 +77,6 @@ pub fn accept_lobby(app: &Arc<App>, lobby: Lobby, me: Option<&str>) -> hots_core
     );
 
     app.set_draft(view.clone());
-    app.emit("lobby", &view);
     Ok(view)
 }
 
@@ -108,9 +103,8 @@ pub async fn post_match(State(app): State<Arc<App>>, Json(body): Json<MatchBody>
             build = body.record.build,
             "match stored"
         );
-        app.emit("ingested", &body.key);
     } else {
-        tracing::debug!(key = %body.key, "match already stored");
+        tracing::info!(key = %body.key, "already stored, another replay of the same match");
     }
     Ok(Json(Stored { stored, matches }))
 }
@@ -119,12 +113,16 @@ pub async fn known_matches(State(app): State<Arc<App>>) -> Reply<Vec<String>> {
     Ok(Json(app.db.known_replays()?.into_iter().collect()))
 }
 
-pub async fn events(
+pub async fn recent_matches(State(app): State<Arc<App>>) -> Reply<Vec<hots_core::MatchSummary>> {
+    Ok(Json(app.db.recent_matches(20)?))
+}
+
+pub async fn player(
     State(app): State<Arc<App>>,
-) -> Sse<impl Stream<Item = Result<SseEvent, std::convert::Infallible>>> {
-    let stream = BroadcastStream::new(app.subscribe()).filter_map(|event| {
-        let event = event.ok()?;
-        Some(Ok(SseEvent::default().event(event.kind).data(event.data)))
-    });
-    Sse::new(stream).keep_alive(KeepAlive::default())
+    axum::extract::Path(battletag): axum::extract::Path<String>,
+) -> Reply<hots_core::DraftPlayer> {
+    let cfg = app.config();
+    Ok(Json(draft::player_row(
+        &app.db, &cfg, &battletag, 0, 0, false,
+    )?))
 }
