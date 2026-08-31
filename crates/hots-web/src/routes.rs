@@ -51,6 +51,32 @@ pub async fn get_draft(State(app): State<Arc<App>>) -> Json<Option<Draft>> {
 }
 
 #[derive(Deserialize)]
+pub struct NoteBody {
+    pub battletag: String,
+    #[serde(flatten)]
+    pub note: hots_core::PlayerNote,
+}
+
+/// Everyone behind the one login shares these, so the last word is the group's word.
+pub async fn put_note(State(app): State<Arc<App>>, Json(body): Json<NoteBody>) -> Reply<()> {
+    tracing::info!(
+        battletag = body.battletag,
+        verdict = body.note.verdict,
+        note = body.note.note.len(),
+        "note"
+    );
+    app.db.set_note(&body.battletag, &body.note)?;
+    Ok(Json(()))
+}
+
+pub async fn get_note(
+    State(app): State<Arc<App>>,
+    axum::extract::Path(battletag): axum::extract::Path<String>,
+) -> Reply<hots_core::PlayerNote> {
+    Ok(Json(app.db.note(&battletag)?))
+}
+
+#[derive(Deserialize)]
 pub struct LobbyBody {
     pub lobby: Lobby,
     /// Who is asking. Every browser answers for itself.

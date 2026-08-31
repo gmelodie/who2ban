@@ -16,6 +16,23 @@ impl HeroRow {
     }
 }
 
+/// What the people sharing this database have said about a player. The server is guarded
+/// by one credential, so there is nobody to attribute a note to: it belongs to the group.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlayerNote {
+    #[serde(default)]
+    pub note: String,
+    /// 1 thumbs up, -1 thumbs down, 0 neither.
+    #[serde(default)]
+    pub verdict: i8,
+}
+
+impl PlayerNote {
+    pub fn is_empty(&self) -> bool {
+        self.note.trim().is_empty() && self.verdict == 0
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DraftPlayer {
     pub battletag: String,
@@ -25,6 +42,9 @@ pub struct DraftPlayer {
     pub heroes: Vec<HeroRow>,
     /// Games on record, which the shown heroes may not cover.
     pub games: u32,
+    /// Absent from a server too old to send one, which is not the same as an empty note.
+    #[serde(default)]
+    pub note: PlayerNote,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

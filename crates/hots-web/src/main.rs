@@ -55,6 +55,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/matches/known", get(routes::known_matches))
         .route("/api/matches/recent", get(routes::recent_matches))
         .route("/api/player/{battletag}", get(routes::player))
+        .route("/api/note/{battletag}", get(routes::get_note))
+        .route("/api/note", axum::routing::put(routes::put_note))
         .with_state(app);
 
     let addr = std::env::var("HOTS_ADDR").unwrap_or_else(|_| "127.0.0.1:8731".to_string());

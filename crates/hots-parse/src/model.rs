@@ -99,14 +99,29 @@ pub struct MatchRecord {
     pub mode: GameMode,
     pub played_at: i64,
     pub build: u32,
+    /// `m_randomValue` of `replay.initData`: the seed the server hands every client, so
+    /// the same match carries it in all ten replays. A record from a client too old to
+    /// send one falls back to the roster.
+    #[serde(default)]
+    pub game_id: Option<u64>,
 }
 
 impl MatchRecord {
-    /// The same game from ten different machines, under ten different file names, since
-    /// the client names a replay by the local clock of whoever played it.
-    pub fn fingerprint(&self) -> String {
-        let mut handles: Vec<String> = self.players.iter().map(MatchPlayer::handle).collect();
-        handles.sort();
-        format!("{}/{}", self.played_at, handles.join(","))
+    /// Who played what, on which side. Two replays of one match agree on all three even
+    /// when they disagree on the clock, the file name, and who the winner was.
+    pub fn roster(&self) -> String {
+        let mut seats: Vec<String> = self
+            .players
+            .iter()
+            .map(|p| format!("{}:{}:{}", p.handle(), p.hero, p.team))
+            .collect();
+        seats.sort();
+        seats.join(",")
+    }
+
+    /// A replay cut short by a disconnect records nobody as the winner, and its player
+    /// rows must not overwrite the rows of a replay that saw the end.
+    pub fn decided(&self) -> bool {
+        self.players.iter().any(|p| p.won) && !self.players.iter().all(|p| p.won)
     }
 }

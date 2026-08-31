@@ -73,6 +73,20 @@ impl Store {
         }
     }
 
+    pub fn set_note(&self, battletag: &str, note: &hots_core::PlayerNote) -> Result<(), String> {
+        match self {
+            Store::Local(db) => db.set_note(battletag, note).map_err(|e| e.to_string()),
+            Store::Server(server) => {
+                let body = serde_json::json!({
+                    "battletag": battletag,
+                    "note": note.note,
+                    "verdict": note.verdict,
+                });
+                server.put("/api/note", &body)
+            }
+        }
+    }
+
     pub fn count(&self) -> Result<u32, String> {
         match self {
             Store::Local(db) => db.match_count().map_err(|e| e.to_string()),
@@ -125,6 +139,16 @@ impl Server {
             request = request.header("authorization", auth);
         }
         read(&url, request.send_json(body))
+    }
+
+    /// Nothing here reads the reply, so nothing here fails on a reply it did not expect.
+    fn put(&self, path: &str, body: &serde_json::Value) -> Result<(), String> {
+        let url = format!("{}{path}", self.url);
+        let mut request = ureq::put(&url);
+        if let Some(auth) = &self.auth {
+            request = request.header("authorization", auth);
+        }
+        request.send_json(body).map(drop).map_err(|e| failed(&url, e))
     }
 }
 

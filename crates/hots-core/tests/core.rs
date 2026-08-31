@@ -1,5 +1,7 @@
 use hots_core::db::{Db, LocalHero};
-use hots_core::{Config, GameMode, Lobby, LobbyPlayer, MatchPlayer, MatchRecord, Toon, draft};
+use hots_core::{
+    Config, GameMode, Lobby, LobbyPlayer, MatchPlayer, MatchRecord, PlayerNote, Toon, draft,
+};
 
 fn toon(region: u8, id: u64) -> Toon {
     Toon {
@@ -9,7 +11,7 @@ fn toon(region: u8, id: u64) -> Toon {
     }
 }
 
-/// Three games of one player differ by when they happened, which is what a fingerprint uses.
+/// Three games of one player differ by their rosters, which is what dedup keys on.
 fn at(mut record: MatchRecord, minutes: i64) -> MatchRecord {
     record.played_at += minutes * 60;
     record
@@ -33,7 +35,96 @@ fn replay(mode: GameMode, picks: &[(&str, &str, u8, bool)]) -> MatchRecord {
         mode,
         played_at: 1_700_000_000,
         build: 90_000,
+        game_id: None,
     }
+}
+
+fn seeded(mut record: MatchRecord, id: u64) -> MatchRecord {
+    record.game_id = Some(id);
+    record
+}
+
+/// Two replays of one match, saved by two clients whose clocks disagree.
+#[test]
+fn one_seed_is_one_game_however_far_the_clocks_drift() {
+    let db = Db::open_memory().unwrap();
+    let game = replay(GameMode::StormLeague, &[("Me#1", "Raynor", 0, true)]);
+    let mine = seeded(game.clone(), 1042313809);
+    let theirs = seeded(at(game, 400), 1042313809);
+
+    assert!(db.record_replay("mine.StormReplay", &mine).unwrap().is_some());
+    assert!(
+        db.record_replay("theirs.StormReplay", &theirs)
+            .unwrap()
+            .is_none(),
+        "the seed the server picked outranks either clock"
+    );
+    assert_eq!(db.match_count().unwrap(), 1);
+    assert_eq!(db.local_heroes("Me#1", true).unwrap()[0].games, 1);
+}
+
+/// The same ten people can draft the same ten heroes twice. Two seeds say they did.
+#[test]
+fn two_seeds_are_two_games_however_alike() {
+    let db = Db::open_memory().unwrap();
+    let game = replay(GameMode::StormLeague, &[("Me#1", "Raynor", 0, true)]);
+
+    db.record_replay("a.StormReplay", &seeded(game.clone(), 1))
+        .unwrap();
+    assert!(
+        db.record_replay("b.StormReplay", &seeded(game, 2))
+            .unwrap()
+            .is_some()
+    );
+    assert_eq!(db.match_count().unwrap(), 2);
+}
+
+/// A client too old to send a seed still lands on the row a seeded one opened.
+#[test]
+fn a_record_without_a_seed_joins_the_match_it_matches() {
+    let db = Db::open_memory().unwrap();
+    let game = replay(GameMode::StormLeague, &[("Me#1", "Raynor", 0, true)]);
+
+    db.record_replay("seeded.StormReplay", &seeded(game.clone(), 7))
+        .unwrap();
+    assert!(
+        db.record_replay("plain.StormReplay", &at(game, 3))
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(db.match_count().unwrap(), 1);
+    assert_eq!(db.file_count().unwrap(), 2);
+}
+
+/// A replay cut short by a disconnect records ten losers. The one that saw the end wins.
+#[test]
+fn a_finished_replay_replaces_a_severed_one() {
+    let db = Db::open_memory().unwrap();
+    let severed = seeded(
+        replay(
+            GameMode::StormLeague,
+            &[("Me#1", "Raynor", 0, false), ("Foe#2", "Jaina", 1, false)],
+        ),
+        99,
+    );
+    let whole = seeded(
+        replay(
+            GameMode::StormLeague,
+            &[("Me#1", "Raynor", 0, true), ("Foe#2", "Jaina", 1, false)],
+        ),
+        99,
+    );
+
+    db.record_replay("cut.StormReplay", &severed).unwrap();
+    assert_eq!(db.local_heroes("Me#1", true).unwrap()[0].wins, 0);
+
+    assert!(db.record_replay("whole.StormReplay", &whole).unwrap().is_none());
+    assert_eq!(db.match_count().unwrap(), 1);
+    assert_eq!(
+        db.local_heroes("Me#1", true).unwrap()[0].wins,
+        1,
+        "the replay that saw the end owns the result"
+    );
 }
 
 #[test]
@@ -524,6 +615,118 @@ fn a_database_survives_being_reopened() {
     );
 }
 
+/// Names repeat. Your own battletag decides your side, not the first seat that shares a name.
+#[test]
+fn an_exact_battletag_outranks_an_earlier_namesake() {
+    let db = Db::open_memory().unwrap();
+    let lobby = Lobby {
+        region: 1,
+        players: (0..10)
+            .map(|i| LobbyPlayer {
+                battletag: match i {
+                    0 => "Nova#1111".to_string(),
+                    7 => "Nova#2222".to_string(),
+                    n => format!("Seat{n}#{n}"),
+                },
+                team: (i >= 5) as u8,
+                slot: i as u8,
+            })
+            .collect(),
+    };
+
+    let draft = draft::build(&db, &Config::default(), &lobby, Some("Nova#2222")).unwrap();
+    assert_eq!(draft.my_team, Some(1), "slot 7 is mine, slot 0 is a stranger");
+    assert!(
+        draft
+            .players
+            .iter()
+            .any(|p| p.battletag == "Nova#1111" && p.enemy)
+    );
+}
+
+/// One credential guards the server, so a note is the group's note and the last word wins.
+#[test]
+fn a_note_and_a_verdict_survive_a_reopen() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("hots.db");
+
+    {
+        let db = Db::open(&path).unwrap();
+        assert_eq!(db.note("Foe#1").unwrap(), PlayerNote::default());
+        db.set_note(
+            "Foe#1",
+            &PlayerNote {
+                note: "throws when behind".to_string(),
+                verdict: -1,
+            },
+        )
+        .unwrap();
+    }
+
+    let db = Db::open(&path).unwrap();
+    let kept = db.note("Foe#1").unwrap();
+    assert_eq!(kept.note, "throws when behind");
+    assert_eq!(kept.verdict, -1);
+    assert_eq!(
+        db.note("foe#1").unwrap().verdict,
+        -1,
+        "a battletag is a battletag whatever its case"
+    );
+}
+
+/// Taking back both the words and the verdict forgets the player entirely.
+#[test]
+fn clearing_a_note_removes_it() {
+    let db = Db::open_memory().unwrap();
+    db.set_note(
+        "Foe#1",
+        &PlayerNote {
+            note: "rude".to_string(),
+            verdict: 1,
+        },
+    )
+    .unwrap();
+    db.set_note("Foe#1", &PlayerNote::default()).unwrap();
+    assert_eq!(db.note("Foe#1").unwrap(), PlayerNote::default());
+}
+
+/// A draft carries what is known about each seat, so the window asks the server once.
+#[test]
+fn a_draft_carries_the_notes() {
+    let db = Db::open_memory().unwrap();
+    db.set_note(
+        "Foe#1",
+        &PlayerNote {
+            note: "picks Abathur every time".to_string(),
+            verdict: -1,
+        },
+    )
+    .unwrap();
+
+    let lobby = Lobby {
+        region: 1,
+        players: (0..10)
+            .map(|i| LobbyPlayer {
+                battletag: match i {
+                    0 => "Foe#1".to_string(),
+                    n => format!("Seat{n}#{n}"),
+                },
+                team: (i >= 5) as u8,
+                slot: i as u8,
+            })
+            .collect(),
+    };
+    let draft = draft::build(&db, &Config::default(), &lobby, Some("Seat5#5")).unwrap();
+    let seat = draft
+        .players
+        .iter()
+        .find(|p| p.battletag == "Foe#1")
+        .unwrap();
+    assert_eq!(seat.note.note, "picks Abathur every time");
+    assert_eq!(seat.note.verdict, -1);
+    assert!(seat.enemy, "and it is the enemy who is worth a note");
+}
+
 /// A shape this build cannot read is copied aside, never deleted in place.
 #[test]
 fn an_older_database_leaves_a_copy_behind() {
@@ -536,7 +739,7 @@ fn an_older_database_leaves_a_copy_behind() {
     drop(old);
 
     Db::open(&path).unwrap();
-    let backup = path.with_extension("before-v3.db");
+    let backup = path.with_extension("before-v5.db");
     assert!(backup.exists(), "the old file is kept");
     assert!(std::fs::metadata(&backup).unwrap().len() > 0);
 }
