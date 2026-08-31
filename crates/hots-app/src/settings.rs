@@ -48,12 +48,13 @@ impl Settings {
         std::fs::write(&path, text).map_err(|e| e.to_string())
     }
 
+    /// `config.toml` holds what an answer looks like, this file holds where to look.
     pub fn folders(&self) -> hots_core::Config {
         hots_core::Config {
             battletag: Some(self.battletag.clone()).filter(|tag| !tag.is_empty()),
             replay_dir: self.replay_dir.clone(),
             temp_dir: self.temp_dir.clone(),
-            ..hots_core::Config::default()
+            ..hots_core::Config::load().unwrap_or_default()
         }
     }
 }

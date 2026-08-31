@@ -8,7 +8,7 @@ See the most popular heroes among your opponents!
 make app      # the desktop app from source
 make serve    # the admin console on http://localhost:8731
 make          # the console behind nginx and a certificate
-make test     # 29 tests
+make test     # the whole workspace
 ```
 
 ## How it works

@@ -125,6 +125,29 @@ fn aggregates_local_heroes_and_filters_by_mode() {
     assert_eq!(ranked[0].hero, "Raynor");
 }
 
+/// Finding a seat in the lobby ignores case, so counting the games must too.
+#[test]
+fn a_battletag_matches_whatever_its_case() {
+    let db = Db::open_memory().unwrap();
+    db.record_replay(
+        "1.StormReplay",
+        &replay(GameMode::StormLeague, &[("Foe#1", "Raynor", 1, true)]),
+    )
+    .unwrap();
+
+    assert_eq!(db.local_heroes("foe#1", true).unwrap().len(), 1);
+    assert_eq!(db.local_heroes("FOE#1", true).unwrap().len(), 1);
+}
+
+/// The desktop app and the cli both write this key into `replay_files`.
+#[test]
+fn the_same_replay_keys_the_same_from_either_folder() {
+    let a = hots_core::ingest::replay_key(std::path::Path::new("/home/me/Replays/g.StormReplay"));
+    let b = hots_core::ingest::replay_key(std::path::Path::new("/mnt/backup/g.StormReplay"));
+    assert_eq!(a, "g.StormReplay");
+    assert_eq!(a, b);
+}
+
 fn lobby() -> Lobby {
     Lobby {
         region: 2,

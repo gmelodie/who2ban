@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::Sender;
-use std::time::{Duration, SystemTime};
+use std::sync::mpsc::{Sender, channel};
+use std::time::{Duration, Instant, SystemTime};
 
 use notify::{Event, EventKind, RecursiveMode, Watcher};
 
@@ -28,6 +28,15 @@ impl Drop for Watchers {
     }
 }
 
+/// The temp folder appears when the game launches, so a path resolved before that is a guess.
+const RESOLVE_EVERY: Duration = Duration::from_secs(10);
+
+fn lobby_path(cfg: &Config) -> PathBuf {
+    paths::temp_root(cfg)
+        .join("TempWriteReplayP1")
+        .join(paths::BATTLELOBBY_NAME)
+}
+
 /// The lobby uses a stat loop: the client deletes its temp folder on exit, which kills a watch.
 pub fn start(cfg: &Config, tx: Sender<WatchEvent>) -> Result<Watchers> {
     let stop = Arc::new(AtomicBool::new(false));
@@ -50,15 +59,14 @@ fn start_replay_watch(
     if dirs.is_empty() {
         return Ok(None);
     }
+    let found = start_settling(tx);
     let mut watcher = notify::recommended_watcher(move |res: notify::Result<Event>| {
         let Ok(event) = res else { return };
         if !matches!(event.kind, EventKind::Create(_) | EventKind::Modify(_)) {
             return;
         }
         for path in event.paths.into_iter().filter(|p| paths::is_replay(p)) {
-            if ingest::wait_until_stable(&path, Duration::from_secs(20)) {
-                let _ = tx.send(WatchEvent::Replay(path));
-            }
+            let _ = found.send(path);
         }
     })?;
     for dir in dirs {
@@ -67,17 +75,36 @@ fn start_replay_watch(
     Ok(Some(watcher))
 }
 
+/// notify delivers on one thread, and every other event queues behind this wait.
+fn start_settling(tx: Sender<WatchEvent>) -> Sender<PathBuf> {
+    let (found, rx) = channel::<PathBuf>();
+    std::thread::spawn(move || {
+        while let Ok(path) = rx.recv() {
+            if ingest::wait_until_stable(&path, Duration::from_secs(20))
+                && tx.send(WatchEvent::Replay(path)).is_err()
+            {
+                return;
+            }
+        }
+    });
+    found
+}
+
 fn start_lobby_poll(cfg: &Config, tx: Sender<WatchEvent>, stop: Arc<AtomicBool>) {
-    let path = paths::temp_root(cfg)
-        .join("TempWriteReplayP1")
-        .join(paths::BATTLELOBBY_NAME);
+    let cfg = cfg.clone();
 
     std::thread::spawn(move || {
+        let mut path = lobby_path(&cfg);
+        let mut looked = Instant::now();
         let mut last: Option<(u64, SystemTime)> = None;
         while !stop.load(Ordering::Relaxed) {
             std::thread::sleep(Duration::from_millis(400));
             let Ok(meta) = std::fs::metadata(&path) else {
                 last = None;
+                if looked.elapsed() >= RESOLVE_EVERY {
+                    looked = Instant::now();
+                    path = lobby_path(&cfg);
+                }
                 continue;
             };
             let Ok(modified) = meta.modified() else {

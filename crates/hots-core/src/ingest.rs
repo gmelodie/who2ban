@@ -17,8 +17,16 @@ pub fn scan_dirs(dirs: &[PathBuf]) -> Vec<PathBuf> {
     out
 }
 
+/// The file name, since two machines hold the same replay at different paths.
+pub fn replay_key(path: &Path) -> String {
+    path.file_name()
+        .unwrap_or(path.as_os_str())
+        .to_string_lossy()
+        .to_string()
+}
+
 pub fn ingest_file(db: &Db, path: &Path) -> Result<Option<i64>> {
-    let key = path.to_string_lossy().to_string();
+    let key = replay_key(path);
     match hots_parse::replay(path) {
         Ok(replay) => db.record_replay(&key, &replay),
         Err(e) => {
@@ -36,7 +44,7 @@ pub fn backfill(
     let known = db.known_replays()?;
     let files: Vec<PathBuf> = scan_dirs(dirs)
         .into_iter()
-        .filter(|p| !known.contains(&p.to_string_lossy().to_string()))
+        .filter(|p| !known.contains(&replay_key(p)))
         .collect();
 
     let mut progress = IngestProgress {

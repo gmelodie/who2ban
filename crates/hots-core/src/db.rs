@@ -9,7 +9,6 @@ use crate::error::{Error, Result};
 
 const SCHEMA: &str = r#"
 PRAGMA journal_mode = WAL;
-PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS matches(
     id          INTEGER PRIMARY KEY,
@@ -37,9 +36,6 @@ CREATE TABLE IF NOT EXISTS match_players(
 
 CREATE INDEX IF NOT EXISTS match_players_battletag ON match_players(battletag);
 CREATE INDEX IF NOT EXISTS match_players_name ON match_players(name);
-
-DROP TABLE IF EXISTS hp_hero_stats;
-DROP TABLE IF EXISTS players;
 
 CREATE TABLE IF NOT EXISTS replay_errors(
     replay_path TEXT PRIMARY KEY,
@@ -88,7 +84,9 @@ fn migrate(conn: &Connection, path: Option<&Path>) -> Result<()> {
         conn.execute_batch(
             "DROP TABLE IF EXISTS match_players;
              DROP TABLE IF EXISTS replay_files;
-             DROP TABLE IF EXISTS matches;",
+             DROP TABLE IF EXISTS matches;
+             DROP TABLE IF EXISTS hp_hero_stats;
+             DROP TABLE IF EXISTS players;",
         )?;
     }
 
@@ -146,7 +144,9 @@ impl Db {
         Db::from_conn(Connection::open_in_memory()?, None)
     }
 
+    /// `foreign_keys` belongs to the connection, not to the file, so it is set on every open.
     fn from_conn(conn: Connection, path: Option<&Path>) -> Result<Db> {
+        conn.pragma_update(None, "foreign_keys", "ON")?;
         migrate(&conn, path)?;
         Ok(Db {
             conn: Mutex::new(conn),
@@ -230,7 +230,8 @@ impl Db {
         let conn = self.lock();
         let sql = "SELECT mp.hero, count(*), sum(mp.won)
                    FROM match_players mp JOIN matches m ON m.id = mp.match_id
-                   WHERE (mp.battletag = ?1 OR (mp.battletag IS NULL AND mp.name = ?3))
+                   WHERE (mp.battletag = ?1 COLLATE NOCASE
+                          OR (mp.battletag IS NULL AND mp.name = ?3 COLLATE NOCASE))
                      AND (?2 OR m.mode IN ('StormLeague', 'HeroLeague', 'TeamLeague'))
                    GROUP BY mp.hero ORDER BY count(*) DESC";
         let mut stmt = conn.prepare(sql)?;
@@ -249,8 +250,8 @@ impl Db {
         let conn = self.lock();
         let tag = conn
             .query_row(
-                "SELECT coalesce(battletag, name) FROM match_players
-                 GROUP BY handle ORDER BY count(*) DESC LIMIT 1",
+                "SELECT coalesce(max(battletag), max(name)) FROM match_players
+                 GROUP BY handle ORDER BY count(*) DESC, handle LIMIT 1",
                 [],
                 |r| r.get::<_, String>(0),
             )

@@ -1,4 +1,7 @@
-use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
+use std::time::Duration;
 
 use hots_core::watch::{self, WatchEvent};
 use hots_core::{Draft, ingest, paths};
@@ -24,17 +27,27 @@ pub enum Report {
 
 pub struct Worker {
     pub reports: Receiver<Report>,
+    stop: Arc<AtomicBool>,
+}
+
+/// A replaced worker that keeps running races the new one over the same replays.
+impl Drop for Worker {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+    }
 }
 
 impl Worker {
     pub fn start(settings: Settings) -> Worker {
         let (tx, reports) = channel();
-        std::thread::spawn(move || run(settings, tx));
-        Worker { reports }
+        let stop = Arc::new(AtomicBool::new(false));
+        let mine = stop.clone();
+        std::thread::spawn(move || run(settings, tx, mine));
+        Worker { reports, stop }
     }
 }
 
-fn run(settings: Settings, tx: Sender<Report>) {
+fn run(settings: Settings, tx: Sender<Report>, stop: Arc<AtomicBool>) {
     let cfg = settings.folders();
     let store = match Store::open(&settings) {
         Ok(store) => store,
@@ -47,7 +60,7 @@ fn run(settings: Settings, tx: Sender<Report>) {
         replays: paths::replay_dirs(&cfg).len(),
     });
 
-    backfill(&store, &cfg, &tx);
+    backfill(&store, &cfg, &tx, &stop);
 
     let (events, rx) = channel();
     let _watchers = match watch::start(&cfg, events) {
@@ -56,7 +69,12 @@ fn run(settings: Settings, tx: Sender<Report>) {
     };
 
     let me = Some(settings.battletag.clone()).filter(|tag| !tag.is_empty());
-    while let Ok(event) = rx.recv() {
+    while !stop.load(Ordering::Relaxed) {
+        let event = match rx.recv_timeout(Duration::from_millis(250)) {
+            Ok(event) => event,
+            Err(RecvTimeoutError::Timeout) => continue,
+            Err(RecvTimeoutError::Disconnected) => return,
+        };
         match event {
             WatchEvent::Replay(path) => {
                 submit(&store, &path, &tx);
@@ -72,7 +90,7 @@ fn run(settings: Settings, tx: Sender<Report>) {
     }
 }
 
-fn backfill(store: &Store, cfg: &hots_core::Config, tx: &Sender<Report>) {
+fn backfill(store: &Store, cfg: &hots_core::Config, tx: &Sender<Report>, stop: &AtomicBool) {
     let known = match store.known() {
         Ok(known) => known,
         Err(e) => return drop(tx.send(Report::Failed(e))),
@@ -81,12 +99,15 @@ fn backfill(store: &Store, cfg: &hots_core::Config, tx: &Sender<Report>) {
 
     let files: Vec<_> = ingest::scan_dirs(&paths::replay_dirs(cfg))
         .into_iter()
-        .filter(|path| !known.contains(&key_of(path)))
+        .filter(|path| !known.contains(&ingest::replay_key(path)))
         .collect();
 
     let total = files.len() as u32;
     let mut failed = 0;
     for (done, path) in files.iter().enumerate() {
+        if stop.load(Ordering::Relaxed) {
+            return;
+        }
         if !submit(store, path, tx) {
             failed += 1;
         }
@@ -101,25 +122,21 @@ fn backfill(store: &Store, cfg: &hots_core::Config, tx: &Sender<Report>) {
     }
 }
 
-/// The file name is the key, since two machines hold the same replay at different paths.
-fn key_of(path: &std::path::Path) -> String {
-    path.file_name()
-        .map(|name| name.to_string_lossy().to_string())
-        .unwrap_or_default()
-}
-
 fn submit(store: &Store, path: &std::path::Path, tx: &Sender<Report>) -> bool {
     let record = match hots_parse::replay(path) {
         Ok(record) => record,
         Err(e) => {
-            let _ = tx.send(Report::Failed(format!("{}: {e}", key_of(path))));
+            let _ = tx.send(Report::Failed(format!("{}: {e}", ingest::replay_key(path))));
             return false;
         }
     };
-    match store.submit(&key_of(path), &record) {
+    match store.submit(&ingest::replay_key(path), &record) {
         Ok(reply) => {
             if !reply.stored {
-                tracing::debug!(file = key_of(path), "another replay of a stored match");
+                tracing::debug!(
+                    file = ingest::replay_key(path),
+                    "another replay of a stored match"
+                );
             }
             let _ = tx.send(Report::Matches(reply.matches));
             true
