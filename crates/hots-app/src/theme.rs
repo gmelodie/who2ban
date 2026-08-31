@@ -53,8 +53,27 @@ fn paint(style: &mut egui::Style) {
     visuals.widgets.hovered.fg_stroke = Stroke::new(1.0, BLUE);
     visuals.widgets.active.bg_stroke = Stroke::new(1.0, YELLOW);
 
-    style.spacing.item_spacing = egui::vec2(8.0, 6.0);
-    style.spacing.button_padding = egui::vec2(10.0, 4.0);
+    style.spacing.item_spacing = egui::vec2(10.0, 8.0);
+    style.spacing.button_padding = egui::vec2(12.0, 7.0);
+    style.spacing.interact_size = egui::vec2(48.0, 28.0);
+    style.spacing.text_edit_width = 420.0;
+
+    for (text, font) in style.text_styles.iter_mut() {
+        font.size = match text {
+            egui::TextStyle::Small => 12.0,
+            egui::TextStyle::Heading => 19.0,
+            _ => 15.0,
+        };
+    }
+}
+
+/// egui gives a panel 8 points of margin, which reads as none against a window edge.
+pub fn panel(style: &egui::Style) -> egui::Frame {
+    egui::Frame::side_top_panel(style).inner_margin(egui::Margin::symmetric(18, 10))
+}
+
+pub fn central(style: &egui::Style) -> egui::Frame {
+    egui::Frame::central_panel(style).inner_margin(egui::Margin::symmetric(18, 12))
 }
 
 /// The colour of a winrate, and grey until enough games make it mean anything.
