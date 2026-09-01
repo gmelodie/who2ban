@@ -29,7 +29,7 @@ http {
         ssl_protocols       TLSv1.2 TLSv1.3;
         ssl_session_cache   shared:SSL:10m;
 
-        auth_basic           "hots draft";
+        auth_basic           "who2ban";
         auth_basic_user_file /etc/nginx/htpasswd;
 
         client_max_body_size 1m;

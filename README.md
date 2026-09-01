@@ -1,4 +1,4 @@
-# HotS Draft Helper
+# who2ban
 
 See the most popular heroes among your opponents!
 

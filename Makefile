@@ -22,11 +22,11 @@ app-logs:
 
 # The admin console, without docker or tls, at http://localhost:8731.
 serve:
-	cargo run -p hots-web
+	cargo run -p w2b-web
 
 # The desktop app, which is what watches for a lobby.
 app:
-	cargo run -p hots-app
+	cargo run -p w2b-app
 
 test:
 	cargo test --workspace
@@ -36,6 +36,6 @@ check:
 	cargo clippy --workspace --all-targets
 
 dist:
-	cargo build --release -p hots-web -p hots-app
-	install -D target/release/hots-web dist/hots-web
-	install -D target/release/hots-app dist/hots-app
+	cargo build --release -p w2b-web -p w2b-app
+	install -D target/release/w2b-web dist/w2b-web
+	install -D target/release/w2b dist/w2b

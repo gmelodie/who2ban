@@ -1245,72 +1245,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "hots-app"
-version = "0.1.0"
-dependencies = [
- "eframe",
- "egui",
- "hots-core",
- "hots-parse",
- "serde",
- "serde_json",
- "toml",
- "tracing",
- "tracing-subscriber",
- "ureq",
-]
-
-[[package]]
-name = "hots-cli"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "hots-core",
- "serde_json",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "hots-core"
-version = "0.1.0"
-dependencies = [
- "dirs",
- "hots-parse",
- "notify",
- "rusqlite",
- "serde",
- "tempfile",
- "thiserror 2.0.20",
- "toml",
- "tracing",
- "walkdir",
-]
-
-[[package]]
-name = "hots-parse"
-version = "0.1.0"
-dependencies = [
- "heroprotocol",
- "serde",
- "thiserror 2.0.20",
-]
-
-[[package]]
-name = "hots-web"
-version = "0.1.0"
-dependencies = [
- "axum",
- "hots-core",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "http"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3515,6 +3449,72 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
+
+[[package]]
+name = "w2b-app"
+version = "0.1.0"
+dependencies = [
+ "eframe",
+ "egui",
+ "serde",
+ "serde_json",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+ "ureq",
+ "w2b-core",
+ "w2b-parse",
+]
+
+[[package]]
+name = "w2b-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "serde_json",
+ "tracing",
+ "tracing-subscriber",
+ "w2b-core",
+]
+
+[[package]]
+name = "w2b-core"
+version = "0.1.0"
+dependencies = [
+ "dirs",
+ "notify",
+ "rusqlite",
+ "serde",
+ "tempfile",
+ "thiserror 2.0.20",
+ "toml",
+ "tracing",
+ "w2b-parse",
+ "walkdir",
+]
+
+[[package]]
+name = "w2b-parse"
+version = "0.1.0"
+dependencies = [
+ "heroprotocol",
+ "serde",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "w2b-web"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "w2b-core",
+]
 
 [[package]]
 name = "walkdir"

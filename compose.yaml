@@ -1,4 +1,4 @@
-name: hots-draft
+name: who2ban
 
 services:
   app:
@@ -6,7 +6,7 @@ services:
     restart: unless-stopped
     expose: ["8731"]
     environment:
-      RUST_LOG: ${RUST_LOG:-hots_web=info,hots_core=info}
+      RUST_LOG: ${RUST_LOG:-w2b_web=info,w2b_core=info}
     volumes:
       - data:/data
 
