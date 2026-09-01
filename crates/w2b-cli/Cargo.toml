@@ -1,0 +1,19 @@
+[package]
+name = "w2b-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Headless driver for the who2ban core"
+
+[[bin]]
+name = "w2b-cli"
+path = "src/main.rs"
+
+[dependencies]
+w2b-core = { workspace = true }
+
+anyhow = { workspace = true }
+clap = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

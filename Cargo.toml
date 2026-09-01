@@ -1,11 +1,11 @@
 [workspace]
 resolver = "3"
 members = [
-    "crates/hots-parse",
-    "crates/hots-core",
-    "crates/hots-cli",
-    "crates/hots-web",
-    "crates/hots-app",
+    "crates/w2b-parse",
+    "crates/w2b-core",
+    "crates/w2b-cli",
+    "crates/w2b-web",
+    "crates/w2b-app",
 ]
 
 [workspace.package]
@@ -14,8 +14,8 @@ edition = "2024"
 license = "MIT"
 
 [workspace.dependencies]
-hots-parse = { path = "crates/hots-parse" }
-hots-core = { path = "crates/hots-core" }
+w2b-parse = { path = "crates/w2b-parse" }
+w2b-core = { path = "crates/w2b-core" }
 heroprotocol = { git = "https://github.com/gmelodie/rs-heroprotocol", rev = "fda2dab" }
 
 anyhow = "1"
