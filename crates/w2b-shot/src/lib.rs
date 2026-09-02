@@ -26,18 +26,6 @@ impl Frame {
         }
         hi.saturating_sub(lo) > 12
     }
-
-    pub fn crop(&self, x: usize, y: usize, w: usize, h: usize) -> Option<Frame> {
-        if x + w > self.w || y + h > self.h || w == 0 || h == 0 {
-            return None;
-        }
-        let mut rgb = Vec::with_capacity(w * h * 3);
-        for row in y..y + h {
-            let from = (row * self.w + x) * 3;
-            rgb.extend_from_slice(&self.rgb[from..from + w * 3]);
-        }
-        Some(Frame { w, h, rgb })
-    }
 }
 
 /// Where a window is on the desktop, in screen coordinates.

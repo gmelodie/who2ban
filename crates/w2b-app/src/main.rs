@@ -644,7 +644,9 @@ impl App {
         if draft.my_team.is_none() {
             ui.label(
                 egui::RichText::new(
-                    "Your battletag is not in this lobby, so every player is shown.",
+                    "Which side is yours could not be worked out, so every player is \
+                     shown. Either your battletag is not in this lobby, or it was not \
+                     among the names read off the screen.",
                 )
                 .color(theme::YELLOW),
             );

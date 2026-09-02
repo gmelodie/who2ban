@@ -36,7 +36,20 @@ pub struct Reader {
     /// Held open across looks: the display is asked every couple of seconds for as long
     /// as the program runs.
     screen: Option<w2b_shot::Screen>,
+    /// Consecutive looks that found the window and copied nothing off it.
+    blank_grabs: u32,
 }
+
+/// Where a banner sits on the desktop, or `None` if that is off the edge of it.
+fn on_screen(rect: &w2b_shot::Rect, x: usize, y: usize) -> Option<(i16, i16)> {
+    let sx = i32::from(rect.x) + i32::try_from(x).ok()?;
+    let sy = i32::from(rect.y) + i32::try_from(y).ok()?;
+    let fits = |v: i32| (i32::from(i16::MIN)..=i32::from(i16::MAX)).contains(&v);
+    (fits(sx) && fits(sy)).then_some((sx as i16, sy as i16))
+}
+
+/// Grumbling on the first blank grab would fire once for every alt-tab.
+const BLANK_GRABS_BEFORE_COMPLAINT: u32 = 5;
 
 impl Reader {
     /// The atlas this machine has built, or the one shipped with the program if it has
@@ -53,6 +66,7 @@ impl Reader {
             seen: Vec::new(),
             unsaved: false,
             screen: w2b_shot::screens().ok().and_then(|s| s.into_iter().next()),
+            blank_grabs: 0,
         }
     }
 
@@ -71,19 +85,26 @@ impl Reader {
     pub fn look(&mut self) -> Option<Vec<(geometry::Seat, String)>> {
         let screen = self.screen.as_ref()?;
         let rect = w2b_shot::find_window(GAME_WINDOW).ok().flatten()?;
-        let frame = screen.grab_region(rect.x, rect.y, rect.w, rect.h).ok()?;
-        // A grab of one flat colour is a dropped frame, and reading it would report an
-        // empty draft rather than no draft.
-        if !frame.looks_drawn() {
-            return None;
-        }
 
         let mut shots = Vec::new();
         let mut reads = Vec::new();
-        for (seat, (x, y, w, h)) in geometry::banners(frame.w, frame.h) {
-            let Some(cut) = frame.crop(x, y, w, h) else {
+        let mut drawn = false;
+        // Only the ten banners are copied, not the screen they sit on. Taking the whole
+        // window and cropping it afterwards moved twenty-four megabytes to keep two, and
+        // did it every couple of seconds for as long as the program was open.
+        for (seat, (x, y, w, h)) in geometry::banners(usize::from(rect.w), usize::from(rect.h)) {
+            let Some((sx, sy)) = on_screen(&rect, x, y) else {
                 continue;
             };
+            let Ok(cut) = screen.grab_region(sx, sy, w as u16, h as u16) else {
+                continue;
+            };
+            // A grab of one flat colour is a dropped frame. Reading it would report an
+            // empty draft rather than no draft.
+            if !cut.looks_drawn() {
+                continue;
+            }
+            drawn = true;
             let Some(reading) = w2b_glyph::read(&cut.rgb, cut.w, cut.h, &self.atlas) else {
                 continue;
             };
@@ -97,6 +118,20 @@ impl Reader {
                 h: cut.h,
             });
         }
+
+        if !drawn {
+            // The window is there and every grab came back blank, which is worth saying
+            // once: it is what an exclusive fullscreen client looks like from out here.
+            self.blank_grabs += 1;
+            if self.blank_grabs == BLANK_GRABS_BEFORE_COMPLAINT {
+                tracing::warn!(
+                    "the game window will not copy; if it is running exclusive \
+                     fullscreen, borderless windowed can be read and it cannot"
+                );
+            }
+            return None;
+        }
+        self.blank_grabs = 0;
 
         if reads.len() < LEAST_SEATS {
             return None;

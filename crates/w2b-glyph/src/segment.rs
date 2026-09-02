@@ -129,6 +129,10 @@ pub fn letter_sized(found: Vec<Blob>, area: usize) -> Vec<Blob> {
         .collect()
 }
 
+/// Blobs to try pairing off when looking for the baseline. A battletag is twelve
+/// letters; anything past this is scenery, and pairing all of it is cubic work.
+const MOST_CANDIDATES: usize = 48;
+
 /// The line a name is written along.
 #[derive(Clone, Copy, Debug)]
 pub struct Baseline {
@@ -153,10 +157,19 @@ pub fn fit_baseline(found: &[Blob], tolerance: f32) -> Option<Baseline> {
     if found.len() < 2 {
         return None;
     }
+    // Every pair, then every blob against each: fine for the dozen letters of a name,
+    // cubic on a crop that caught a busy corner of the screen. A name is never the
+    // smallest specks in its own box, so only the largest are worth pairing off.
+    let mut order: Vec<usize> = (0..found.len()).collect();
+    if order.len() > MOST_CANDIDATES {
+        order.sort_by_key(|&i| std::cmp::Reverse(found[i].pixels.len()));
+        order.truncate(MOST_CANDIDATES);
+    }
+
     let mut best = (0usize, Baseline { slope: 0.0, intercept: 0.0 });
 
-    for i in 0..found.len() {
-        for j in i + 1..found.len() {
+    for (n, &i) in order.iter().enumerate() {
+        for &j in &order[n + 1..] {
             let (a, b) = (&found[i], &found[j]);
             if (b.cx - a.cx).abs() < 1e-6 {
                 continue;
