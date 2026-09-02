@@ -1,0 +1,13 @@
+[package]
+name = "w2b-glyph"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Reads the player names off the draft screen by matching glyph shapes"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+image = { workspace = true }

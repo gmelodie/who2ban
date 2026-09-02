@@ -146,6 +146,13 @@ pub async fn known_matches(State(app): State<Arc<App>>) -> Reply<Vec<String>> {
     Ok(Json(app.db.known_replays()?.into_iter().collect()))
 }
 
+/// Every battletag on record. The desktop client reads the draft off its own screen and
+/// needs to know who it is allowed to conclude a name is; a client backed by this server
+/// has no local roster to ask.
+pub async fn battletags(State(app): State<Arc<App>>) -> Reply<Vec<String>> {
+    Ok(Json(app.db.battletags()?))
+}
+
 pub async fn recent_matches(State(app): State<Arc<App>>) -> Reply<Vec<w2b_core::MatchSummary>> {
     Ok(Json(app.db.recent_matches(20)?))
 }

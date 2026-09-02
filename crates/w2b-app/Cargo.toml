@@ -12,9 +12,13 @@ path = "src/main.rs"
 [dependencies]
 w2b-core = { workspace = true }
 w2b-parse = { workspace = true }
+w2b-glyph = { workspace = true }
+w2b-shot = { workspace = true }
 
 eframe = { workspace = true }
 egui = { workspace = true }
+egui_extras = { workspace = true }
+image = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 toml = { workspace = true }

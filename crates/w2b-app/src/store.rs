@@ -73,6 +73,17 @@ impl Store {
         }
     }
 
+    /// The players the draft reader may name. Empty when it cannot be had, which turns
+    /// the reader off rather than letting it match against nobody.
+    pub fn battletags(&self) -> Vec<String> {
+        match self {
+            Store::Local(db) => db.battletags().unwrap_or_default(),
+            // An older server does not serve this, and answers 404. The reader stays off
+            // on that server and the client works from the battlelobby as it always did.
+            Store::Server(server) => server.get("/api/players/battletags").unwrap_or_default(),
+        }
+    }
+
     pub fn set_note(&self, battletag: &str, note: &w2b_core::PlayerNote) -> Result<(), String> {
         match self {
             Store::Local(db) => db.set_note(battletag, note).map_err(|e| e.to_string()),

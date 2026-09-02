@@ -6,6 +6,8 @@ members = [
     "crates/w2b-cli",
     "crates/w2b-web",
     "crates/w2b-app",
+    "crates/w2b-glyph",
+    "crates/w2b-shot",
 ]
 
 [workspace.package]
@@ -16,12 +18,16 @@ license = "MIT"
 [workspace.dependencies]
 w2b-parse = { path = "crates/w2b-parse" }
 w2b-core = { path = "crates/w2b-core" }
+w2b-glyph = { path = "crates/w2b-glyph" }
+w2b-shot = { path = "crates/w2b-shot" }
 heroprotocol = { git = "https://github.com/gmelodie/rs-heroprotocol", rev = "fda2dab" }
 
 anyhow = "1"
 axum = "0.8"
 eframe = { version = "0.36", default-features = false, features = ["glow", "default_fonts", "wayland", "x11"] }
 egui = "0.36"
+egui_extras = { version = "0.36", default-features = false, features = ["image"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
 clap = { version = "4", features = ["derive"] }
 dirs = "6"
 notify = "8"
@@ -29,6 +35,8 @@ rusqlite = { version = "0.40", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
+x11rb = "0.14"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_WindowsAndMessaging"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "signal"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 toml = "1"

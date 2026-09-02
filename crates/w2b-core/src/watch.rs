@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Sender, channel};
@@ -31,8 +31,21 @@ impl Drop for Watchers {
 /// The temp folder appears when the game launches, so a path resolved before that is a guess.
 const RESOLVE_EVERY: Duration = Duration::from_secs(10);
 
+/// A client that was killed leaves its lobby behind, and no match runs this long.
+const FRESH: Duration = Duration::from_secs(2 * 60 * 60);
+
+/// A read that lands mid-write finds fewer than ten players, which is reported as noise.
+const SETTLE: Duration = Duration::from_secs(2);
+
 /// The subfolder the client writes the live lobby into.
 const LOBBY_DIR: &str = "TempWriteReplayP1";
+
+#[derive(Debug, Clone, PartialEq)]
+struct Stamp {
+    path: PathBuf,
+    len: u64,
+    modified: SystemTime,
+}
 
 fn lobby_paths(cfg: &Config) -> Vec<PathBuf> {
     paths::temp_roots(cfg)
@@ -41,17 +54,27 @@ fn lobby_paths(cfg: &Config) -> Vec<PathBuf> {
         .collect()
 }
 
-/// The lobby of whichever prefix wrote one last. An empty file is one the client has
-/// created but not filled yet, which parses as noise.
-fn newest_lobby(paths: &[PathBuf]) -> Option<(PathBuf, u64, SystemTime)> {
+fn stamp(path: &Path) -> Option<Stamp> {
+    let meta = std::fs::metadata(path).ok()?;
+    Some(Stamp {
+        path: path.to_path_buf(),
+        len: meta.len(),
+        modified: meta.modified().ok()?,
+    })
+}
+
+/// A clock that moved backwards dates the live file in the future.
+fn is_fresh(found: &Stamp) -> bool {
+    found.modified.elapsed().map_or(true, |age| age < FRESH)
+}
+
+/// The lobby of whichever prefix wrote one last. An empty file is a created one, not a game.
+fn newest_lobby(paths: &[PathBuf]) -> Option<Stamp> {
     paths
         .iter()
-        .filter_map(|path| {
-            let meta = std::fs::metadata(path).ok()?;
-            Some((path.clone(), meta.len(), meta.modified().ok()?))
-        })
-        .filter(|(_, len, _)| *len > 0)
-        .max_by_key(|(_, _, modified)| *modified)
+        .filter_map(|path| stamp(path))
+        .filter(|found| found.len > 0 && is_fresh(found))
+        .max_by_key(|found| found.modified)
 }
 
 /// The lobby uses a stat loop: the client deletes its temp folder on exit, which kills a watch.
@@ -113,12 +136,11 @@ fn start_lobby_poll(cfg: &Config, tx: Sender<WatchEvent>, stop: Arc<AtomicBool>)
     std::thread::spawn(move || {
         let mut paths = lobby_paths(&cfg);
         let mut looked = Instant::now();
-        let mut last: Option<(PathBuf, u64, SystemTime)> = None;
+        let mut last: Option<Stamp> = None;
         while !stop.load(Ordering::Relaxed) {
             std::thread::sleep(Duration::from_millis(400));
-            // The game creates its temp folder at launch, so the folders that exist
-            // now are not the folders that existed when this thread started.
-            if looked.elapsed() >= RESOLVE_EVERY {
+            // The scan walks every wine prefix, so it stops once a lobby answers.
+            if last.is_none() && looked.elapsed() >= RESOLVE_EVERY {
                 looked = Instant::now();
                 paths = lobby_paths(&cfg);
             }
@@ -129,13 +151,44 @@ fn start_lobby_poll(cfg: &Config, tx: Sender<WatchEvent>, stop: Arc<AtomicBool>)
             if last.as_ref() == Some(&found) {
                 continue;
             }
-            let Ok(bytes) = std::fs::read(&found.0) else {
+            if !ingest::wait_until_stable(&found.path, SETTLE) {
+                continue;
+            }
+            let (Some(settled), Ok(bytes)) = (stamp(&found.path), std::fs::read(&found.path))
+            else {
                 continue;
             };
-            last = Some(found);
+            last = Some(settled);
+            tracing::info!(file = %found.path.display(), bytes = bytes.len(), "lobby");
             if tx.send(WatchEvent::Lobby(bytes)).is_err() {
                 return;
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_lobby_of_a_client_that_was_killed_is_not_a_game() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(paths::BATTLELOBBY_NAME);
+        std::fs::write(&path, b"a lobby").unwrap();
+        assert!(newest_lobby(std::slice::from_ref(&path)).is_some());
+
+        let file = std::fs::File::options().write(true).open(&path).unwrap();
+        file.set_modified(SystemTime::now() - FRESH - Duration::from_secs(60))
+            .unwrap();
+        assert!(newest_lobby(&[path]).is_none());
+    }
+
+    #[test]
+    fn an_empty_lobby_is_a_file_the_client_has_not_written_yet() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(paths::BATTLELOBBY_NAME);
+        std::fs::write(&path, b"").unwrap();
+        assert!(newest_lobby(&[path]).is_none());
+    }
 }

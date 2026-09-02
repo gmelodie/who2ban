@@ -6,8 +6,17 @@ use std::time::Duration;
 use w2b_core::watch::{self, WatchEvent};
 use w2b_core::{Draft, ingest, paths};
 
+use crate::screen;
 use crate::settings::Settings;
 use crate::store::Store;
+
+/// One seat of a finished match: who sat in it, what they played, and the id that names
+/// that hero the same way whatever language the replay was saved in.
+pub struct PlayedHero {
+    pub battletag: String,
+    pub hero: String,
+    pub hero_id: Option<String>,
+}
 
 pub enum Report {
     Store(String),
@@ -27,6 +36,9 @@ pub enum Report {
     Played {
         battletags: Vec<String>,
         winners: Vec<String>,
+        /// Who played what, so the recap can say which card was who rather than leaving
+        /// it to be remembered.
+        heroes: Vec<PlayedHero>,
         map: String,
     },
     Failed(String),
@@ -97,16 +109,43 @@ fn run(settings: Settings, tx: Sender<Report>, orders: Receiver<Command>, stop: 
     };
 
     let me = Some(settings.battletag.clone()).filter(|tag| !tag.is_empty());
-    backfill(&store, &cfg, &tx, &stop, &rx, &orders, me.as_deref());
+    let mut reader = screen::Reader::open(&paths::data_dir());
+    backfill(&store, &cfg, &tx, &stop, &rx, &orders, me.as_deref(), &mut reader);
+
+    // Wayland and a headless machine both refuse the screen, and a store kept on a
+    // server has no roster to match a read against. Either way the client goes on
+    // working from the battlelobby, which is what it did before it could read at all.
+    let watching = reader.can_look();
+    tracing::info!(
+        screen = watching,
+        letters = reader.letters_known(),
+        "draft reader"
+    );
+
+    // The pool is every player on record, read once: a name the reader cannot find here
+    // is one there would be nothing to show about anyway.
+    let mut pool = store.battletags();
+    let mut looked = std::time::Instant::now();
+    let mut on_screen: Vec<String> = Vec::new();
 
     while !stop.load(Ordering::Relaxed) {
         obey(&store, &tx, &orders);
+
+        if watching && !pool.is_empty() && looked.elapsed() >= LOOK_EVERY {
+            looked = std::time::Instant::now();
+            look(&store, &cfg, &tx, me.as_deref(), &mut reader, &pool, &mut on_screen);
+        }
+
         let event = match rx.recv_timeout(Duration::from_millis(250)) {
             Ok(event) => event,
             Err(RecvTimeoutError::Timeout) => continue,
             Err(RecvTimeoutError::Disconnected) => return,
         };
-        handle(&store, &cfg, &tx, me.as_deref(), event);
+        // A finished match adds players, and the next draft may hold one of them.
+        if matches!(event, WatchEvent::Replay(_)) {
+            pool = store.battletags();
+        }
+        handle(&store, &cfg, &tx, me.as_deref(), &mut reader, event);
     }
 }
 
@@ -127,6 +166,7 @@ fn handle(
     cfg: &w2b_core::Config,
     tx: &Sender<Report>,
     me: Option<&str>,
+    reader: &mut screen::Reader,
     event: WatchEvent,
 ) {
     match event {
@@ -134,12 +174,62 @@ fn handle(
             submit(store, &path, tx);
         }
         WatchEvent::Lobby(bytes) => match w2b_parse::battlelobby(&bytes) {
-            Ok(lobby) => match store.draft(cfg, &lobby, me) {
-                Ok(draft) => drop(tx.send(Report::Lobby(Box::new(draft)))),
-                Err(e) => drop(tx.send(Report::Failed(e))),
-            },
+            Ok(lobby) => {
+                // The file is the truth, so it both replaces whatever was read off the
+                // screen and says what those shapes were. This is the only moment the
+                // reader is ever told it was right.
+                let names: Vec<String> =
+                    lobby.players.iter().map(|p| p.battletag.clone()).collect();
+                let learned = reader.harvest(&names);
+                if learned > 0 {
+                    if let Err(e) = reader.save() {
+                        let _ = tx.send(Report::Failed(format!("atlas: {e}")));
+                    }
+                    tracing::info!(banners = learned, letters = reader.letters_known(), "learned");
+                }
+                match store.draft(cfg, &lobby, me) {
+                    Ok(draft) => drop(tx.send(Report::Lobby(Box::new(draft)))),
+                    Err(e) => drop(tx.send(Report::Failed(e))),
+                }
+            }
             Err(e) => drop(tx.send(Report::Failed(format!("lobby: {e}")))),
         },
+    }
+}
+
+/// The screen is looked at this often while no draft has been found on it. A draft runs
+/// for minutes, so nothing is missed by not looking harder, and a grab of a 4K screen is
+/// not free.
+const LOOK_EVERY: Duration = Duration::from_secs(2);
+
+/// Read the draft off the screen and report it, unless it says the same as last time.
+/// Returns the roster it reported, so an unchanged screen stays quiet.
+fn look(
+    store: &Store,
+    cfg: &w2b_core::Config,
+    tx: &Sender<Report>,
+    me: Option<&str>,
+    reader: &mut screen::Reader,
+    pool: &[String],
+    last: &mut Vec<String>,
+) {
+    let Some(reads) = reader.look() else { return };
+    let Some(lobby) = screen::Reader::lobby(&reads, pool) else {
+        return;
+    };
+
+    let mut roster: Vec<String> = lobby.players.iter().map(|p| p.battletag.clone()).collect();
+    roster.sort();
+    if roster == *last {
+        return;
+    }
+    match store.draft(cfg, &lobby, me) {
+        Ok(draft) => {
+            tracing::info!(seats = roster.len(), "draft read from the screen");
+            *last = roster;
+            let _ = tx.send(Report::Lobby(Box::new(draft)));
+        }
+        Err(e) => drop(tx.send(Report::Failed(e))),
     }
 }
 
@@ -153,6 +243,7 @@ fn backfill(
     events: &Receiver<WatchEvent>,
     orders: &Receiver<Command>,
     me: Option<&str>,
+    reader: &mut screen::Reader,
 ) {
     let known = match store.known() {
         Ok(known) => known,
@@ -172,7 +263,7 @@ fn backfill(
             return;
         }
         for event in events.try_iter() {
-            handle(store, cfg, tx, me, event);
+            handle(store, cfg, tx, me, reader, event);
         }
         obey(store, tx, orders);
         if !submit(store, path, tx) {
@@ -211,6 +302,15 @@ fn submit(store: &Store, path: &std::path::Path, tx: &Sender<Report>) -> bool {
             let _ = tx.send(Report::Played {
                 battletags: record.players.iter().map(tag).collect(),
                 winners: record.players.iter().filter(|p| p.won).map(tag).collect(),
+                heroes: record
+                    .players
+                    .iter()
+                    .map(|p| PlayedHero {
+                        battletag: tag(p),
+                        hero: p.hero.clone(),
+                        hero_id: p.hero_id.clone(),
+                    })
+                    .collect(),
                 map: record.map.clone(),
             });
             true

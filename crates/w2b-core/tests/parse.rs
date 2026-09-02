@@ -68,6 +68,17 @@ fn a_stray_length_byte_does_not_shift_a_battletag() {
     assert!(tags.iter().all(|tag| !tag.starts_with('!')));
 }
 
+/// Nine Korean characters are 27 bytes, and the scan counts bytes.
+#[test]
+fn reads_a_name_that_is_not_ascii() {
+    let mut tags = TEN;
+    tags[4] = "김김김김김김김김김#1234";
+    let lobby = parse::battlelobby(&lobby_bytes(b"KR", &tags)).unwrap();
+
+    assert_eq!(lobby.players.len(), 10);
+    assert_eq!(lobby.players[4].battletag, "김김김김김김김김김#1234");
+}
+
 #[test]
 fn rejects_a_lobby_it_cannot_split_in_two() {
     assert!(parse::battlelobby(&lobby_bytes(b"US", &TEN[..5])).is_err());
