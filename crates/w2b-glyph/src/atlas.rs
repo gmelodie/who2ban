@@ -35,10 +35,17 @@ const HEIGHT_WEIGHT: f32 = 0.9;
 impl Glyph {
     /// Nought for the same letter drawn the same size, one for nothing alike.
     pub fn distance(&self, other: &Glyph) -> f32 {
-        let shape = distance(&self.cells, &other.cells);
-        let size = (self.height - other.height).abs().min(1.0);
-        (shape + HEIGHT_WEIGHT * size) / (1.0 + HEIGHT_WEIGHT)
+        apart(&self.cells, self.height, &other.cells, other.height)
     }
+}
+
+/// Kept off `Glyph` so a stored shape can be compared where it lies. Building a `Glyph`
+/// to ask this question copied four hundred bytes for every shape on file, on every
+/// letter of every banner, several times a second.
+fn apart(a: &[u8], a_height: f32, b: &[u8], b_height: f32) -> f32 {
+    let shape = distance(a, b);
+    let size = (a_height - b_height).abs().min(1.0);
+    (shape + HEIGHT_WEIGHT * size) / (1.0 + HEIGHT_WEIGHT)
 }
 
 fn distance(a: &[u8], b: &[u8]) -> f32 {
@@ -194,9 +201,9 @@ impl Atlas {
         if slot.len() >= self.per_letter {
             return;
         }
-        let known = slot.iter().any(|s| {
-            distance(&s.cells, &glyph.cells) < 0.02 && (s.height - glyph.height).abs() < 0.08
-        });
+        let known = slot
+            .iter()
+            .any(|s| distance(&s.cells, &glyph.cells) < 0.02 && (s.height - glyph.height).abs() < 0.08);
         if !known {
             slot.push(Shape {
                 cells: glyph.cells.clone(),
@@ -214,13 +221,7 @@ impl Atlas {
             .filter_map(|(letter, shapes)| {
                 let closest = shapes
                     .iter()
-                    .map(|s| {
-                        Glyph {
-                            cells: s.cells.clone(),
-                            height: s.height,
-                        }
-                        .distance(glyph)
-                    })
+                    .map(|s| apart(&s.cells, s.height, &glyph.cells, glyph.height))
                     .fold(f32::MAX, f32::min);
                 Some((letter.chars().next()?, closest))
             })

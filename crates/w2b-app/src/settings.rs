@@ -58,7 +58,8 @@ impl Settings {
             std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
         }
         let text = toml::to_string_pretty(self).map_err(|e| e.to_string())?;
-        std::fs::write(&path, text).map_err(|e| e.to_string())
+        std::fs::write(&path, text).map_err(|e| e.to_string())?;
+        keep_to_ourselves(&path)
     }
 
     /// `config.toml` holds what an answer looks like, this file holds where to look.
@@ -70,6 +71,26 @@ impl Settings {
             ..w2b_core::Config::load().unwrap_or_default()
         }
     }
+}
+
+/// This file holds the password to the shared database in plain text, and was being
+/// written world readable. It cannot stop being plain text without somewhere better to
+/// put it, but it can stop being everybody's business.
+#[cfg(unix)]
+fn keep_to_ourselves(path: &std::path::Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    let mut mode = std::fs::metadata(path)
+        .map_err(|e| e.to_string())?
+        .permissions();
+    mode.set_mode(0o600);
+    std::fs::set_permissions(path, mode).map_err(|e| e.to_string())
+}
+
+/// Windows inherits the directory's rights, which for a user's own data folder is the
+/// user. There is no mode to set.
+#[cfg(not(unix))]
+fn keep_to_ourselves(_path: &std::path::Path) -> Result<(), String> {
+    Ok(())
 }
 
 #[cfg(test)]
@@ -91,5 +112,26 @@ mod tests {
 
         let silent: Settings = toml::from_str("battletag = \"Me#1\"\n").unwrap();
         assert_eq!(silent.server.as_deref(), Some(DEFAULT_SERVER));
+    }
+}
+
+#[cfg(all(test, unix))]
+mod permissions {
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn the_file_holding_the_password_is_not_world_readable() {
+        use super::keep_to_ourselves;
+        let dir = std::env::temp_dir().join("w2b-perm-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("app.toml");
+        std::fs::write(&path, "password = \"hunter2\"\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        keep_to_ourselves(&path).unwrap();
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "left as {mode:o}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
