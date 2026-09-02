@@ -288,6 +288,9 @@ fn battletags(bytes: &[u8]) -> Vec<String> {
     out
 }
 
+/// A battletag name is at most twelve characters, and a Korean character is three bytes.
+const NAME_BYTES: usize = 48;
+
 /// The length is written as a vint, whose encoding has moved between builds.
 fn encodes(header: u8, len: usize) -> bool {
     let len = len as u8;
@@ -305,7 +308,7 @@ fn tag_around(bytes: &[u8], hash: usize) -> Option<(usize, String)> {
     }
     let end = hash + 1 + digits;
 
-    for name_len in 2..=24usize {
+    for name_len in 2..=NAME_BYTES {
         let start = hash.checked_sub(name_len)?;
         if start == 0 {
             break;
@@ -313,8 +316,12 @@ fn tag_around(bytes: &[u8], hash: usize) -> Option<(usize, String)> {
         if !encodes(bytes[start - 1], end - start) {
             continue;
         }
-        let text = std::str::from_utf8(bytes.get(start..end)?).ok()?;
-        let (name, _) = text.split_once('#')?;
+        // A candidate that cuts a character in half is the wrong length, not the end of the scan.
+        let Ok(text) = std::str::from_utf8(&bytes[start..end]) else {
+            continue;
+        };
+        // The name of this `#`, not of the first one a long candidate happens to reach back over.
+        let (name, _) = text.split_at(hash - start);
         if name
             .chars()
             .all(|c| !c.is_control() && c != ':' && c != '#')

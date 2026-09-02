@@ -59,6 +59,13 @@ impl Draft {
     pub fn enemies(&self) -> impl Iterator<Item = &DraftPlayer> {
         self.players.iter().filter(|p| p.enemy)
     }
+
+    /// The other side of the same lobby. A teammate today is an opponent later, so their
+    /// pool is worth the same look as an enemy's. Everyone is an ally when `my_team` is
+    /// `None`, which is why the caller shows one flat group in that case.
+    pub fn allies(&self) -> impl Iterator<Item = &DraftPlayer> {
+        self.players.iter().filter(|p| !p.enemy)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

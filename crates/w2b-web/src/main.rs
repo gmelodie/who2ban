@@ -54,6 +54,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/matches", post(routes::post_match))
         .route("/api/matches/known", get(routes::known_matches))
         .route("/api/matches/recent", get(routes::recent_matches))
+        .route("/api/players/battletags", get(routes::battletags))
         .route("/api/player/{battletag}", get(routes::player))
         .route("/api/note/{battletag}", get(routes::get_note))
         .route("/api/note", axum::routing::put(routes::put_note))

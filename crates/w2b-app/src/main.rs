@@ -1,5 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod heroes;
+mod screen;
 mod settings;
 mod store;
 mod theme;
@@ -8,13 +10,15 @@ mod worker;
 use eframe::egui;
 use settings::Settings;
 use w2b_core::{Draft, DraftPlayer};
-use worker::{Report, Worker};
+use worker::{PlayedHero, Report, Worker};
 
 fn main() -> eframe::Result {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "w2b_app=info,w2b_core=info".into()),
+                // The binary is called `w2b`, so that is the target its own lines carry.
+                // Filtering on the package name instead throws every one of them away.
+                .unwrap_or_else(|_| "w2b=info,w2b_app=info,w2b_core=info,w2b_glyph=info".into()),
         )
         .init();
 
@@ -27,6 +31,9 @@ fn main() -> eframe::Result {
         options,
         Box::new(|cc| {
             theme::apply(&cc.egui_ctx);
+            // The portraits are PNGs behind `bytes://` URIs, which nothing decodes until
+            // a loader is installed.
+            egui_extras::install_image_loaders(&cc.egui_ctx);
             Ok(Box::new(App::new()))
         }),
     )
@@ -36,6 +43,9 @@ struct Recap {
     map: String,
     /// `None` when nothing here knows which side was yours.
     won: Option<bool>,
+    /// Who played what. Read through `same_player`, because the stored name may carry no
+    /// discriminator.
+    heroes: Vec<PlayedHero>,
 }
 
 /// A note edited this frame. `save` marks the ones that have been finished with, since a
@@ -114,8 +124,9 @@ impl App {
                 Report::Played {
                     battletags,
                     winners,
+                    heroes,
                     map,
-                } => self.finished(&battletags, &winners, map),
+                } => self.finished(&battletags, &winners, heroes, map),
                 Report::Failed(e) => {
                     tracing::warn!("{e}");
                     if e.contains(store::REJECTED) {
@@ -133,7 +144,13 @@ impl App {
     /// cannot say whether a draft is still being drafted. The replay of that same draft
     /// arriving in the replay folder can, and does. The cards stay up: the minute after a
     /// game is when anyone actually has something to write about the people in it.
-    fn finished(&mut self, played: &[String], winners: &[String], map: String) {
+    fn finished(
+        &mut self,
+        played: &[String],
+        winners: &[String],
+        heroes: Vec<PlayedHero>,
+        map: String,
+    ) {
         let Some(draft) = &self.draft else {
             return;
         };
@@ -149,6 +166,7 @@ impl App {
             map,
             won: (!me.is_empty() && played.iter().any(|tag| same_player(tag, me)))
                 .then(|| winners.iter().any(|tag| same_player(tag, me))),
+            heroes,
         });
     }
 
@@ -156,15 +174,38 @@ impl App {
     fn stage(&self) -> (String, egui::Color32) {
         match (&self.draft, &self.recap) {
             (Some(_), Some(recap)) => {
-                let how = match recap.won {
-                    Some(true) => " · won",
-                    Some(false) => " · lost",
-                    None => "",
+                // Won and lost are worth the colour: it is the one thing about a
+                // finished game you want to read without reading.
+                let (how, color) = match recap.won {
+                    Some(true) => (" · won", theme::GREEN),
+                    Some(false) => (" · lost", theme::RED),
+                    None => ("", theme::DIM),
                 };
-                (format!("last game · {}{how}", recap.map), theme::DIM)
+                (format!("last game · {}{how}", recap.map), color)
             }
-            (Some(_), None) => ("in a lobby, drafting".to_string(), theme::YELLOW),
+            (Some(draft), None) => {
+                (format!("in a lobby · {}", App::roster(draft)), theme::YELLOW)
+            }
             (None, _) => ("searching for a game".to_string(), theme::BLUE),
+        }
+    }
+
+    /// What the lobby amounts to, which is the question the window is open to answer:
+    /// how many of the people about to be played against have ever been seen before.
+    /// A count of opponents alone says nothing, because a lobby always holds five.
+    fn roster(draft: &Draft) -> String {
+        let (side, all): (&str, Vec<&DraftPlayer>) = match draft.my_team {
+            Some(_) => ("opponents", draft.enemies().collect()),
+            None => ("players", draft.players.iter().collect()),
+        };
+        let seen = all.iter().filter(|p| p.games > 0).count();
+        let games: u32 = all.iter().map(|p| p.games).sum();
+        match seen {
+            0 => format!("{} {side}, none seen before", all.len()),
+            _ => format!(
+                "{} {side} · {seen} seen before, {games} games on record",
+                all.len()
+            ),
         }
     }
 
@@ -443,7 +484,7 @@ impl App {
             );
             ui.add_space(2.0);
             ui.label(
-                egui::RichText::new("the enemy pools appear here the moment a draft opens")
+                egui::RichText::new("the enemy pools appear here the moment the lobby forms")
                     .color(theme::DIM),
             );
         });
@@ -600,10 +641,6 @@ impl App {
     }
 
     fn draw_draft(&self, ui: &mut egui::Ui, draft: &Draft, edits: &mut Vec<Edit>) {
-        let shown: Vec<&DraftPlayer> = match draft.my_team {
-            Some(_) => draft.enemies().collect(),
-            None => draft.players.iter().collect(),
-        };
         if draft.my_team.is_none() {
             ui.label(
                 egui::RichText::new(
@@ -615,30 +652,95 @@ impl App {
         }
 
         egui::ScrollArea::vertical().show(ui, |ui| {
-            let (columns, card) = grid_of(ui.available_width(), shown.len());
-            // Rows rather than a wrap, so the cards line up down the window as well as
-            // across it, whatever the widest battletag in each of them turns out to be.
-            for row in shown.chunks(columns) {
-                ui.horizontal_top(|ui| {
-                    for player in row {
-                        // The layout has to be named: a child of a horizontal parent
-                        // inherits it, and the card would lay itself out sideways.
-                        ui.allocate_ui_with_layout(
-                            egui::vec2(card, 0.0),
-                            egui::Layout::top_down(egui::Align::Min),
-                            |ui| self.draw_player(ui, player, edits),
-                        );
-                    }
-                });
-                ui.add_space(2.0);
+            // Enemies first and under their own heading: they are the ones a ban is aimed
+            // at. Teammates follow rather than being left out, because the player you are
+            // carrying today queues against you tomorrow.
+            match draft.my_team {
+                None => {
+                    let all: Vec<&DraftPlayer> = draft.players.iter().collect();
+                    self.draw_group(ui, None, theme::Side::Unknown, &all, edits);
+                }
+                Some(_) => {
+                    let enemies: Vec<&DraftPlayer> = draft.enemies().collect();
+                    let allies: Vec<&DraftPlayer> = draft.allies().collect();
+                    self.draw_group(ui, Some("Enemies"), theme::Side::Enemy, &enemies, edits);
+                    ui.add_space(14.0);
+                    self.draw_group(ui, Some("Your team"), theme::Side::Ally, &allies, edits);
+                }
             }
         });
     }
 
-    fn draw_player(&self, ui: &mut egui::Ui, player: &DraftPlayer, edits: &mut Vec<Edit>) {
+    fn draw_group(
+        &self,
+        ui: &mut egui::Ui,
+        title: Option<&str>,
+        side: theme::Side,
+        shown: &[&DraftPlayer],
+        edits: &mut Vec<Edit>,
+    ) {
+        if shown.is_empty() {
+            return;
+        }
+        if let Some(title) = title {
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new(title)
+                        .strong()
+                        .size(13.0)
+                        .color(side.color()),
+                );
+                ui.label(
+                    egui::RichText::new(format!("{}", shown.len()))
+                        .size(13.0)
+                        .color(theme::DIM),
+                );
+            });
+            ui.add_space(5.0);
+        }
+        let (columns, card) = grid_of(ui.available_width(), shown.len());
+        // Rows rather than a wrap, so the cards line up down the window as well as
+        // across it, whatever the widest battletag in each of them turns out to be.
+        for row in shown.chunks(columns) {
+            ui.horizontal_top(|ui| {
+                for player in row {
+                    // The layout has to be named: a child of a horizontal parent
+                    // inherits it, and the card would lay itself out sideways.
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(card, 0.0),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| self.draw_player(ui, player, side, edits),
+                    );
+                }
+            });
+            ui.add_space(2.0);
+        }
+    }
+
+    /// The hero this player just finished a game on, so the card can be tied to a face
+    /// from the match instead of to a battletag nobody read at the time.
+    fn hero_of(&self, player: &DraftPlayer) -> Option<&PlayedHero> {
+        self.recap
+            .as_ref()?
+            .heroes
+            .iter()
+            .find(|seat| same_player(&seat.battletag, &player.battletag))
+    }
+
+    fn draw_player(
+        &self,
+        ui: &mut egui::Ui,
+        player: &DraftPlayer,
+        side: theme::Side,
+        edits: &mut Vec<Edit>,
+    ) {
+        let name_color = match side {
+            theme::Side::Unknown => theme::TEXT,
+            side => side.color(),
+        };
         egui::Frame::group(ui.style())
-            .fill(theme::PANEL)
-            .stroke(egui::Stroke::new(1.0, theme::LINE))
+            .fill(side.wash())
+            .stroke(egui::Stroke::new(1.0, side.color().gamma_multiply(0.7)))
             .corner_radius(6)
             .inner_margin(12.0)
             .show(ui, |ui| {
@@ -651,7 +753,7 @@ impl App {
                             egui::RichText::new(&player.battletag)
                                 .strong()
                                 .size(15.0)
-                                .color(theme::TEXT),
+                                .color(name_color),
                         )
                         .truncate(),
                     );
@@ -659,6 +761,28 @@ impl App {
                         ui.label(egui::RichText::new(games(player.games)).color(theme::DIM));
                     });
                 });
+                if let Some(seat) = self.hero_of(player) {
+                    ui.add_space(3.0);
+                    ui.horizontal(|ui| {
+                        // A face is quicker to place than a name, so the portrait leads
+                        // and the spelling backs it up.
+                        if let Some((stem, bytes)) =
+                            heroes::portrait(seat.hero_id.as_deref(), &seat.hero)
+                        {
+                            ui.add(
+                                egui::Image::from_bytes(format!("bytes://hero/{stem}.png"), bytes)
+                                    .fit_to_exact_size(egui::vec2(26.0, 26.0))
+                                    .corner_radius(4),
+                            );
+                        }
+                        ui.label(
+                            egui::RichText::new(format!("played {}", seat.hero))
+                                .italics()
+                                .size(13.0)
+                                .color(theme::BLUE),
+                        );
+                    });
+                }
                 ui.separator();
 
                 if player.heroes.is_empty() {
@@ -870,4 +994,78 @@ fn path_line(ui: &mut egui::Ui, label: &str, path: &str) {
             .truncate(),
         );
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use w2b_core::{DraftPlayer, HeroRow, PlayerNote};
+
+    fn seat(tag: &str, enemy: bool, games: u32) -> DraftPlayer {
+        DraftPlayer {
+            battletag: tag.to_string(),
+            slot: 0,
+            team: u8::from(enemy),
+            enemy,
+            games,
+            note: PlayerNote::default(),
+            heroes: vec![HeroRow {
+                hero: "Raynor".into(),
+                games,
+                wins: games / 2,
+            }],
+        }
+    }
+
+    fn draft(my_team: Option<u8>, players: Vec<DraftPlayer>) -> Draft {
+        Draft {
+            region: 1,
+            my_team,
+            players,
+        }
+    }
+
+    #[test]
+    fn the_summary_counts_the_opponents_worth_knowing_about() {
+        let view = draft(
+            Some(0),
+            vec![
+                seat("me#1", false, 40),
+                seat("them#1", true, 12),
+                seat("them#2", true, 3),
+                seat("them#3", true, 0),
+            ],
+        );
+        let line = App::roster(&view);
+        // Three opponents, and it is the two on record that decide whether the window
+        // has anything to say; the teammate's forty games are not the question.
+        assert!(line.contains("3 opponents"), "{line}");
+        assert!(line.contains("2 seen before"), "{line}");
+        assert!(line.contains("15 games"), "{line}");
+    }
+
+    #[test]
+    fn a_lobby_of_strangers_says_so_rather_than_counting_to_nought() {
+        let view = draft(Some(0), vec![seat("me#1", false, 9), seat("them#1", true, 0)]);
+        let line = App::roster(&view);
+        assert!(line.contains("none seen before"), "{line}");
+    }
+
+    #[test]
+    fn a_lobby_without_a_side_counts_everybody() {
+        // No battletag of ours in the lobby, so nobody is an opponent and all ten are
+        // worth listing rather than reporting nought opponents.
+        let view = draft(None, vec![seat("a#1", false, 5), seat("b#1", false, 0)]);
+        let line = App::roster(&view);
+        assert!(line.contains("2 players"), "{line}");
+        assert!(line.contains("1 seen before"), "{line}");
+    }
+
+    #[test]
+    fn the_two_sides_are_not_given_the_same_colour() {
+        assert_ne!(theme::Side::Ally.color(), theme::Side::Enemy.color());
+        assert_ne!(theme::Side::Ally.wash(), theme::Side::Enemy.wash());
+        // A lobby that does not know which side is ours must not paint everyone an ally.
+        assert_eq!(theme::Side::Unknown.wash(), theme::PANEL);
+    }
 }

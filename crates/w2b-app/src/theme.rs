@@ -11,6 +11,55 @@ pub const RED: Color32 = Color32::from_rgb(0xfb, 0x49, 0x34);
 pub const YELLOW: Color32 = Color32::from_rgb(0xfa, 0xbd, 0x2f);
 pub const BLUE: Color32 = Color32::from_rgb(0x83, 0xa5, 0x98);
 
+/// The two colours the game gives the teams, taken off the draft screen's own banners:
+/// your side is blue and theirs is red, and a card is quicker to place by colour than by
+/// reading which heading it sits under.
+pub const ALLY: Color32 = Color32::from_rgb(0x5a, 0x8f, 0xd0);
+pub const ENEMY: Color32 = Color32::from_rgb(0xe0, 0x6c, 0x75);
+
+/// Neither, for a lobby that does not say which side is yours.
+pub const NEUTRAL: Color32 = LINE;
+
+/// Which side of a lobby a player is on, as far as this client can tell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Side {
+    Ally,
+    Enemy,
+    /// The configured battletag is not in the lobby, so no side is anybody's.
+    Unknown,
+}
+
+impl Side {
+    pub fn color(self) -> Color32 {
+        match self {
+            Side::Ally => ALLY,
+            Side::Enemy => ENEMY,
+            Side::Unknown => NEUTRAL,
+        }
+    }
+
+    /// Faint enough to read a card against, strong enough to tell the two apart at a
+    /// glance across a window of ten of them.
+    pub fn wash(self) -> Color32 {
+        match self {
+            Side::Unknown => PANEL,
+            side => tint(PANEL, side.color(), 0.14),
+        }
+    }
+}
+
+/// `base` moved `amount` of the way towards `with`.
+pub fn tint(base: Color32, with: Color32, amount: f32) -> Color32 {
+    let mix = |a: u8, b: u8| {
+        (a as f32 * (1.0 - amount) + b as f32 * amount).round().clamp(0.0, 255.0) as u8
+    };
+    Color32::from_rgb(
+        mix(base.r(), with.r()),
+        mix(base.g(), with.g()),
+        mix(base.b(), with.b()),
+    )
+}
+
 pub fn apply(ctx: &egui::Context) {
     ctx.set_theme(egui::Theme::Dark);
     ctx.all_styles_mut(paint);

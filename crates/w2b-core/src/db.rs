@@ -487,6 +487,19 @@ impl Db {
     }
 
     /// The player seen in the most stored matches, used when nobody says who they are.
+    /// Every battletag this database has ever seen, which is the set of players the
+    /// draft reader is allowed to conclude a name is. A player nobody here has met has
+    /// nothing to show anyway, so leaving them out costs nothing and spares the reader
+    /// several thousand chances to be confidently wrong.
+    pub fn battletags(&self) -> Result<Vec<String>> {
+        let conn = self.lock();
+        let mut q = conn.prepare(
+            "SELECT DISTINCT battletag FROM match_players WHERE battletag IS NOT NULL",
+        )?;
+        let rows = q.query_map([], |row| row.get::<_, String>(0))?;
+        Ok(rows.filter_map(std::result::Result::ok).collect())
+    }
+
     pub fn likely_self(&self) -> Result<Option<String>> {
         let conn = self.lock();
         let tag = conn
