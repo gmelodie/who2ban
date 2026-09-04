@@ -28,8 +28,12 @@ write_config() {
     export CERT_DIR DOMAIN
     # shellcheck disable=SC2016  # envsubst wants the names, not their values
     envsubst '${DOMAIN} ${CERT_DIR}' \
-        < /etc/nginx/nginx.conf.template > /etc/nginx/nginx.conf
-    echo "$CERT_DIR $(md5sum "$CERT_DIR/fullchain.pem" | cut -d' ' -f1)"
+        < /deploy/nginx.conf.template > /etc/nginx/nginx.conf
+    # The rendered config is part of what is being served, not just the certificate.
+    # Watching the certificate alone meant an edited template was written out here every
+    # minute and never loaded: compose does not recreate this container for a change to
+    # a bind-mounted file, so nothing else was going to notice either.
+    echo "$CERT_DIR $(md5sum "$CERT_DIR/fullchain.pem" | cut -d' ' -f1) $(md5sum /etc/nginx/nginx.conf | cut -d' ' -f1)"
 }
 
 serving="$(write_config)"
@@ -46,8 +50,13 @@ while sleep 60; do
     current="$(write_config)"
     if [ "$current" != "$serving" ]; then
         serving="$current"
-        echo "certificate changed, reloading"
-        nginx -s reload
+        # Refuse a broken template rather than reloading into it and falling over.
+        if nginx -t 2>&1; then
+            echo "configuration changed, reloading"
+            nginx -s reload
+        else
+            echo "the new configuration will not load; keeping the one already serving"
+        fi
     fi
 done &
 
