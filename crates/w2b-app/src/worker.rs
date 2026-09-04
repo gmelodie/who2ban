@@ -110,6 +110,14 @@ fn run(settings: Settings, tx: Sender<Report>, orders: Receiver<Command>, stop: 
 
     let me = Some(settings.battletag.clone()).filter(|tag| !tag.is_empty());
     let mut reader = screen::Reader::open(&paths::data_dir());
+    // Before the first draft, not after it: the shapes are only worth having in advance.
+    if let Some(pooled) = store.glyphs() {
+        let gained = reader.absorb(&pooled);
+        if gained > 0 {
+            let _ = reader.save();
+        }
+        tracing::info!(gained, letters = reader.letters_known(), "glyphs from the server");
+    }
     // Who the battlelobby last named, and what was last read off the screen. Declared
     // before the backfill because a lobby can form while it runs.
     let mut from_file: Vec<String> = Vec::new();
@@ -225,6 +233,15 @@ fn handle(
                         let _ = tx.send(Report::Failed(format!("atlas: {e}")));
                     }
                     tracing::info!(banners = learned, letters = reader.letters_known(), "learned");
+                    if let Some(gained) = store.push_glyphs(reader.atlas()) {
+                        tracing::info!(gained, "glyphs given to the server");
+                    }
+                }
+                // Banners this atlas could not cut up. The pool may have the letters
+                // this client is missing, so it is sent the picture instead.
+                let unfiled = reader.take_unfiled();
+                if let Some(gained) = store.push_banners(&unfiled) {
+                    tracing::info!(banners = unfiled.len(), gained, "banners given to the server");
                 }
                 match store.draft(cfg, &lobby, me) {
                     Ok(draft) => drop(tx.send(Report::Lobby(Box::new(draft)))),

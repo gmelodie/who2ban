@@ -8,6 +8,7 @@ use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 use w2b_core::draft;
 use w2b_core::{Config, Draft, Lobby, MatchRecord};
+use w2b_glyph::Atlas;
 
 pub struct Failed(String);
 
@@ -165,4 +166,74 @@ pub async fn player(
     Ok(Json(draft::player_row(
         &app.db, &cfg, &battletag, 0, 0, false,
     )?))
+}
+
+/// What a client got, or gave, when it swapped shapes with the pool.
+#[derive(Debug, Clone, Serialize)]
+pub struct Learned {
+    /// Examples the pool did not already hold.
+    pub gained: usize,
+    pub letters: usize,
+    pub examples: usize,
+}
+
+/// One banner as it was on a client's screen, with the name the battlelobby says it
+/// carried. PNG rather than raw pixels: a draft is ten of these and the raw form is
+/// twenty-four megabytes of mostly background.
+#[derive(Debug, Clone, Deserialize)]
+pub struct BannerBody {
+    /// PNG bytes. Serde reads a JSON array of numbers, which `Vec<u8>` is.
+    pub png: Vec<u8>,
+    /// The name the banner turned out to say, without its discriminator.
+    pub name: String,
+}
+
+pub async fn get_glyphs(State(app): State<Arc<App>>) -> Json<Atlas> {
+    Json(app.atlas())
+}
+
+/// A client folds what it has learned into the pool and is told what was new.
+pub async fn post_glyphs(State(app): State<Arc<App>>, Json(atlas): Json<Atlas>) -> Reply<Learned> {
+    let gained = app.absorb(&atlas)?;
+    let (letters, examples) = app.atlas_size();
+    if gained > 0 {
+        tracing::info!(gained, letters, examples, "glyphs pooled");
+    }
+    Ok(Json(Learned {
+        gained,
+        letters,
+        examples,
+    }))
+}
+
+/// The pictures rather than the shapes. A client that could not cut a banner into the
+/// right number of letters still has the banner, and the pool can try again with an
+/// alphabet that client did not have.
+pub async fn post_banners(
+    State(app): State<Arc<App>>,
+    Json(banners): Json<Vec<BannerBody>>,
+) -> Reply<Learned> {
+    let mut gained = 0;
+    for banner in &banners {
+        let image = match image::load_from_memory_with_format(&banner.png, image::ImageFormat::Png)
+        {
+            Ok(image) => image.to_rgb8(),
+            // One unreadable picture is not a reason to drop the other nine.
+            Err(e) => {
+                tracing::warn!(name = %banner.name, error = %e, "banner would not decode");
+                continue;
+            }
+        };
+        let (w, h) = (image.width() as usize, image.height() as usize);
+        gained += app.digest(&image.into_raw(), w, h, &banner.name)?;
+    }
+    let (letters, examples) = app.atlas_size();
+    if gained > 0 {
+        tracing::info!(gained, letters, examples, banners = banners.len(), "banners digested");
+    }
+    Ok(Json(Learned {
+        gained,
+        letters,
+        examples,
+    }))
 }

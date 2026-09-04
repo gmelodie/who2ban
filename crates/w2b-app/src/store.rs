@@ -1,4 +1,5 @@
 use w2b_core::{Config, Db, Draft, Lobby, MatchRecord, draft, paths};
+use w2b_glyph::Atlas;
 
 use crate::settings::Settings;
 
@@ -84,6 +85,49 @@ impl Store {
         }
     }
 
+    /// The shapes the server has pooled from everyone using it, or `None` when this
+    /// client stands alone or the server is too old to keep a pool.
+    pub fn glyphs(&self) -> Option<Atlas> {
+        match self {
+            Store::Local(_) => None,
+            Store::Server(server) => server.get("/api/glyphs").ok(),
+        }
+    }
+
+    /// Offer what this client has learned to the pool. The count is what the pool did
+    /// not already hold, so a client that only echoes back what it was given reports
+    /// nought and says nothing.
+    pub fn push_glyphs(&self, atlas: &Atlas) -> Option<usize> {
+        let Store::Server(server) = self else {
+            return None;
+        };
+        let body = serde_json::to_value(atlas).ok()?;
+        server
+            .post::<ServerLearned>("/api/glyphs", &body)
+            .ok()
+            .map(|learned| learned.gained)
+    }
+
+    /// Offer the pictures themselves, for banners this client could not cut up.
+    pub fn push_banners(&self, banners: &[(Vec<u8>, String)]) -> Option<usize> {
+        let Store::Server(server) = self else {
+            return None;
+        };
+        if banners.is_empty() {
+            return None;
+        }
+        let body = serde_json::json!(
+            banners
+                .iter()
+                .map(|(png, name)| serde_json::json!({ "png": png, "name": name }))
+                .collect::<Vec<_>>()
+        );
+        server
+            .post::<ServerLearned>("/api/glyphs/banners", &body)
+            .ok()
+            .map(|learned| learned.gained)
+    }
+
     pub fn set_note(&self, battletag: &str, note: &w2b_core::PlayerNote) -> Result<(), String> {
         match self {
             Store::Local(db) => db.set_note(battletag, note).map_err(|e| e.to_string()),
@@ -113,6 +157,11 @@ impl Store {
 struct ServerStored {
     stored: bool,
     matches: u32,
+}
+
+#[derive(serde::Deserialize)]
+struct ServerLearned {
+    gained: usize,
 }
 
 #[derive(serde::Deserialize)]

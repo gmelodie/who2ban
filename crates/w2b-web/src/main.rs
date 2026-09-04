@@ -31,7 +31,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         heroes_shown = cfg.max_heroes,
         "config"
     );
-    let app = Arc::new(App::new(Db::open(&paths::db_path())?, cfg));
+    let atlas_path = paths::data_dir().join("glyphs.json");
+    let app = Arc::new(App::new(Db::open(&paths::db_path())?, cfg, atlas_path.clone()));
+    let (letters, examples) = app.atlas_size();
+    tracing::info!(path = %atlas_path.display(), letters, examples, "glyph pool");
     tracing::info!(
         matches = app.db.match_count().unwrap_or(0),
         failed = app.db.error_count().unwrap_or(0),
@@ -58,6 +61,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/player/{battletag}", get(routes::player))
         .route("/api/note/{battletag}", get(routes::get_note))
         .route("/api/note", axum::routing::put(routes::put_note))
+        .route(
+            "/api/glyphs",
+            get(routes::get_glyphs).post(routes::post_glyphs),
+        )
+        // A draft of ten banners runs to a few megabytes of PNG, well past axum's
+        // default two.
+        .route(
+            "/api/glyphs/banners",
+            post(routes::post_banners).layer(axum::extract::DefaultBodyLimit::max(32 * 1024 * 1024)),
+        )
         .with_state(app);
 
     let addr = std::env::var("W2B_ADDR").unwrap_or_else(|_| "127.0.0.1:8731".to_string());
