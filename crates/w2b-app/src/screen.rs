@@ -7,7 +7,7 @@
 
 use std::path::{Path, PathBuf};
 
-use w2b_glyph::{Atlas, geometry, name};
+use w2b_glyph::{Atlas, Reading, geometry, name};
 use w2b_parse::{Lobby, LobbyPlayer};
 
 /// The title the client gives its window.
@@ -16,9 +16,16 @@ const GAME_WINDOW: &str = "Heroes of the Storm";
 /// Shapes the client has not learned for itself yet, cut from one draft by hand.
 const SEED: &str = include_str!("../assets/glyph-seed.json");
 
-/// Fewer seats than this and there is no draft on the screen, only scenery that happens
-/// to hold some bright pixels.
+/// Fewer banners than this came back legible and there is no draft on the screen, only
+/// scenery that happens to hold some bright pixels. This is a question about the screen,
+/// so it is asked of what was read, never of how many of those names are on record.
 const LEAST_SEATS: usize = 3;
+
+/// A screen-read draft is worth showing as soon as it names one player, because a name
+/// nobody has a record of has nothing to show anyway. Requiring three *placed* seats
+/// meant a lobby of strangers with two acquaintances in it was thrown away whole, which
+/// is the case the reader exists for.
+const LEAST_PLACED: usize = 1;
 
 /// A banner as it was on the screen, kept until the battlelobby can name it.
 struct Shot {
@@ -38,6 +45,9 @@ pub struct Reader {
     screen: Option<w2b_shot::Screen>,
     /// Consecutive looks that found the window and copied nothing off it.
     blank_grabs: u32,
+    /// What the reader last reported, so a steady state is said once rather than every
+    /// couple of seconds.
+    said: Option<&'static str>,
 }
 
 /// Where a banner sits on the desktop, or `None` if that is off the edge of it.
@@ -50,6 +60,50 @@ fn on_screen(rect: &w2b_shot::Rect, x: usize, y: usize) -> Option<(i16, i16)> {
 
 /// Grumbling on the first blank grab would fire once for every alt-tab.
 const BLANK_GRABS_BEFORE_COMPLAINT: u32 = 5;
+
+/// Players by the name on their banner, which is the battletag without its number.
+fn candidates(tags: &[String]) -> Vec<(String, String)> {
+    tags.iter()
+        .map(|tag| {
+            let name = tag.split_once('#').map_or(tag.as_str(), |(n, _)| n);
+            (name.to_string(), tag.clone())
+        })
+        .collect()
+}
+
+/// The reading to believe out of the ones the ladder produced.
+///
+/// A rung that names somebody wins, and the closest such naming wins outright: the score
+/// is what decides a seat later anyway, so choosing by it here cannot seat anyone that
+/// `identify` would have turned away. When no rung names anybody the fullest read is
+/// kept, so a banner that a stranger is standing at still counts towards there being a
+/// draft on the screen at all.
+fn best_read(ladder: Vec<Reading>, candidates: &[(String, String)]) -> Option<Reading> {
+    let mut best: Option<(f32, Reading)> = None;
+    let mut fallback: Option<Reading> = None;
+
+    for reading in ladder {
+        match name::rank(&reading.text, candidates).map(|(found, _)| found.score) {
+            Some(score) if best.as_ref().is_none_or(|(had, _)| score < *had) => {
+                best = Some((score, reading));
+            }
+            Some(_) => {}
+            None => {
+                if fallback.as_ref().is_none_or(|had| reading.unread < had.unread) {
+                    fallback = Some(reading);
+                }
+            }
+        }
+    }
+
+    // Which rung answered, and how well, is the whole story when a draft is on the screen
+    // and no seat is being placed: too dim to read, or read and nobody it could be.
+    if let Some((score, reading)) = best {
+        tracing::debug!(text = %reading.text, threshold = reading.threshold, score, "banner");
+        return Some(reading);
+    }
+    fallback
+}
 
 impl Reader {
     /// The atlas this machine has built, or the one shipped with the program if it has
@@ -67,6 +121,17 @@ impl Reader {
             unsaved: false,
             screen: w2b_shot::screens().ok().and_then(|s| s.into_iter().next()),
             blank_grabs: 0,
+            said: None,
+        }
+    }
+
+    /// Say what the reader is doing, but only when that changes. Every one of these was
+    /// silent before, which is how a reader that never read a thing looked exactly like
+    /// a reader that was working and had simply found no draft.
+    pub fn say(&mut self, what: &'static str) {
+        if self.said != Some(what) {
+            self.said = Some(what);
+            tracing::info!(state = what, "draft reader");
         }
     }
 
@@ -82,9 +147,21 @@ impl Reader {
 
     /// Grab the game's window and read whatever banners are on it. `None` when there is
     /// no window, no draft, or nothing legible.
-    pub fn look(&mut self) -> Option<Vec<(geometry::Seat, String)>> {
+    /// `pool` is every player on record. A banner is read at each rung of the brightness
+    /// ladder and the rung that names somebody most convincingly is kept: which rung that
+    /// is depends on whether the client has the seat lit, and that changes seat by seat
+    /// as picks lock in.
+    pub fn look(&mut self, pool: &[String]) -> Option<Vec<(geometry::Seat, String)>> {
+        if self.screen.is_none() {
+            self.say("no screen to read");
+            return None;
+        }
+        let candidates = candidates(pool);
+        let Some(rect) = w2b_shot::find_window(GAME_WINDOW).ok().flatten() else {
+            self.say("no game window");
+            return None;
+        };
         let screen = self.screen.as_ref()?;
-        let rect = w2b_shot::find_window(GAME_WINDOW).ok().flatten()?;
 
         let mut shots = Vec::new();
         let mut reads = Vec::new();
@@ -105,12 +182,10 @@ impl Reader {
                 continue;
             }
             drawn = true;
-            let Some(reading) = w2b_glyph::read(&cut.rgb, cut.w, cut.h, &self.atlas) else {
+            let ladder = w2b_glyph::read_ladder(&cut.rgb, cut.w, cut.h, &self.atlas);
+            let Some(reading) = best_read(ladder, &candidates) else {
                 continue;
             };
-            if reading.is_empty() {
-                continue;
-            }
             reads.push((seat, reading.text));
             shots.push(Shot {
                 rgb: cut.rgb,
@@ -129,28 +204,26 @@ impl Reader {
                      fullscreen, borderless windowed can be read and it cannot"
                 );
             }
+            self.say("the game window will not copy");
             return None;
         }
         self.blank_grabs = 0;
 
         if reads.len() < LEAST_SEATS {
+            self.say("no draft on the screen");
             return None;
         }
+        self.say("reading a draft");
         self.seen = shots;
         Some(reads)
     }
 
     /// The lobby those reads describe, holding only the seats that named somebody this
     /// database already knows. A seat that cannot be placed is left out rather than
-    /// filled with a guess, so a half-read draft shows half a draft.
+    /// filled with a guess, so a half-read draft shows half a draft: an invented
+    /// battletag would take notes and verdicts against a player who does not exist.
     pub fn lobby(reads: &[(geometry::Seat, String)], pool: &[String]) -> Option<Lobby> {
-        let candidates: Vec<(String, String)> = pool
-            .iter()
-            .map(|tag| {
-                let name = tag.split_once('#').map_or(tag.as_str(), |(n, _)| n);
-                (name.to_string(), tag.clone())
-            })
-            .collect();
+        let candidates = candidates(pool);
 
         let mut players = Vec::new();
         for (seat, text) in reads {
@@ -172,7 +245,7 @@ impl Reader {
             });
         }
 
-        (players.len() >= LEAST_SEATS).then_some(Lobby {
+        (players.len() >= LEAST_PLACED).then_some(Lobby {
             players,
             // The screen does not say, and nothing downstream of a local draft asks.
             region: 0,
@@ -189,20 +262,15 @@ impl Reader {
         if self.seen.is_empty() || truth.is_empty() {
             return 0;
         }
-        let candidates: Vec<(String, String)> = truth
-            .iter()
-            .map(|tag| {
-                let name = tag.split_once('#').map_or(tag.as_str(), |(n, _)| n);
-                (name.to_string(), tag.clone())
-            })
-            .collect();
+        let candidates = candidates(truth);
 
         let mut taken: Vec<String> = Vec::new();
         let mut learned = 0;
         // Taken in one pass and never revisited: the banners are gone after this.
         let seen = std::mem::take(&mut self.seen);
         for shot in &seen {
-            let Some(reading) = w2b_glyph::read(&shot.rgb, shot.w, shot.h, &self.atlas) else {
+            let ladder = w2b_glyph::read_ladder(&shot.rgb, shot.w, shot.h, &self.atlas);
+            let Some(reading) = best_read(ladder, &candidates) else {
                 continue;
             };
             let Some(found) = name::identify(&reading.text, &candidates) else {
@@ -283,9 +351,25 @@ mod tests {
         assert_eq!(lobby.players.len(), 3, "a guess was seated");
     }
 
+    /// Whether there is a draft on the screen at all is settled in `look`, which wants
+    /// `LEAST_SEATS` legible banners before it asks this. What is left here is only who
+    /// could be placed, and one acquaintance among nine strangers is the case the reader
+    /// exists for: requiring three placed seats threw that whole lobby away.
     #[test]
-    fn a_screen_with_almost_nothing_on_it_is_not_a_draft() {
+    fn one_player_on_a_screen_is_still_worth_showing() {
         let reads = vec![(seat(false, 0), "geemelodie".to_string())];
+        let lobby = Reader::lobby(&reads, &pool()).expect("a named seat is worth showing");
+        assert_eq!(lobby.players.len(), 1);
+        assert_eq!(lobby.players[0].battletag, "geemelodie#1711");
+    }
+
+    #[test]
+    fn a_screen_that_names_nobody_is_not_a_draft() {
+        let reads = vec![
+            (seat(false, 0), "?????".to_string()),
+            (seat(true, 0), "xqzvw".to_string()),
+            (seat(true, 1), "qqzzqq".to_string()),
+        ];
         assert!(Reader::lobby(&reads, &pool()).is_none());
     }
 

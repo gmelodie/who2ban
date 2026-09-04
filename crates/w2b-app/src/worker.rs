@@ -110,7 +110,22 @@ fn run(settings: Settings, tx: Sender<Report>, orders: Receiver<Command>, stop: 
 
     let me = Some(settings.battletag.clone()).filter(|tag| !tag.is_empty());
     let mut reader = screen::Reader::open(&paths::data_dir());
-    backfill(&store, &cfg, &tx, &stop, &rx, &orders, me.as_deref(), &mut reader);
+    // Who the battlelobby last named, and what was last read off the screen. Declared
+    // before the backfill because a lobby can form while it runs.
+    let mut from_file: Vec<String> = Vec::new();
+    let mut on_screen: Vec<String> = Vec::new();
+    backfill(
+        &store,
+        &cfg,
+        &tx,
+        &stop,
+        &rx,
+        &orders,
+        me.as_deref(),
+        &mut reader,
+        &mut from_file,
+        &mut on_screen,
+    );
 
     // Wayland and a headless machine both refuse the screen, and a store kept on a
     // server has no roster to match a read against. Either way the client goes on
@@ -126,14 +141,22 @@ fn run(settings: Settings, tx: Sender<Report>, orders: Receiver<Command>, stop: 
     // is one there would be nothing to show about anyway.
     let mut pool = store.battletags();
     let mut looked = std::time::Instant::now();
-    let mut on_screen: Vec<String> = Vec::new();
 
     while !stop.load(Ordering::Relaxed) {
         obey(&store, &tx, &orders);
 
         if watching && !pool.is_empty() && looked.elapsed() >= LOOK_EVERY {
             looked = std::time::Instant::now();
-            look(&store, &cfg, &tx, me.as_deref(), &mut reader, &pool, &mut on_screen);
+            look(
+                &store,
+                &cfg,
+                &tx,
+                me.as_deref(),
+                &mut reader,
+                &pool,
+                &mut on_screen,
+                &mut from_file,
+            );
         }
 
         let event = match rx.recv_timeout(Duration::from_millis(250)) {
@@ -145,7 +168,16 @@ fn run(settings: Settings, tx: Sender<Report>, orders: Receiver<Command>, stop: 
         if matches!(event, WatchEvent::Replay(_)) {
             pool = store.battletags();
         }
-        handle(&store, &cfg, &tx, me.as_deref(), &mut reader, event);
+        handle(
+            &store,
+            &cfg,
+            &tx,
+            me.as_deref(),
+            &mut reader,
+            event,
+            &mut from_file,
+            &mut on_screen,
+        );
     }
 }
 
@@ -161,6 +193,7 @@ fn obey(store: &Store, tx: &Sender<Report>, orders: &Receiver<Command>) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle(
     store: &Store,
     cfg: &w2b_core::Config,
@@ -168,6 +201,8 @@ fn handle(
     me: Option<&str>,
     reader: &mut screen::Reader,
     event: WatchEvent,
+    from_file: &mut Vec<String>,
+    on_screen: &mut Vec<String>,
 ) {
     match event {
         WatchEvent::Replay(path) => {
@@ -180,6 +215,10 @@ fn handle(
                 // reader is ever told it was right.
                 let names: Vec<String> =
                     lobby.players.iter().map(|p| p.battletag.clone()).collect();
+                *from_file = names.clone();
+                // The next draft is a different lobby, so what was read for this one must
+                // not be mistaken for it.
+                on_screen.clear();
                 let learned = reader.harvest(&names);
                 if learned > 0 {
                     if let Err(e) = reader.save() {
@@ -204,6 +243,7 @@ const LOOK_EVERY: Duration = Duration::from_secs(2);
 
 /// Read the draft off the screen and report it, unless it says the same as last time.
 /// Returns the roster it reported, so an unchanged screen stays quiet.
+#[allow(clippy::too_many_arguments)]
 fn look(
     store: &Store,
     cfg: &w2b_core::Config,
@@ -212,9 +252,21 @@ fn look(
     reader: &mut screen::Reader,
     pool: &[String],
     last: &mut Vec<String>,
+    from_file: &mut Vec<String>,
 ) {
-    let Some(reads) = reader.look() else { return };
+    let Some(reads) = reader.look(pool) else {
+        // No draft in front of the player: the post-game screens, the queue, a menu. What
+        // the battlelobby named describes a match that is over, so it is dropped here
+        // rather than being held against the next draft. Without this, a group that
+        // re-queues together suppresses its own next draft, because the only seats the
+        // reader can place are the same friends the last battlelobby already named.
+        from_file.clear();
+        return;
+    };
     let Some(lobby) = screen::Reader::lobby(&reads, pool) else {
+        // The banners were read and named nobody on record. Worth saying: it is the one
+        // failure that looks identical to a working reader with no draft in front of it.
+        reader.say("read the draft, seated nobody on record");
         return;
     };
 
@@ -223,8 +275,16 @@ fn look(
     if roster == *last {
         return;
     }
+    // Everyone this read names was already named by the battlelobby, so it is that same
+    // match seen again rather than the next draft: the scoreboard during play, or the
+    // load screen. The file said more than this read can, so the file stands.
+    if !roster.is_empty() && roster.iter().all(|tag| from_file.contains(tag)) {
+        reader.say("the same match the battlelobby already named");
+        return;
+    }
     match store.draft(cfg, &lobby, me) {
         Ok(draft) => {
+            reader.say("seating a draft read from the screen");
             tracing::info!(seats = roster.len(), "draft read from the screen");
             *last = roster;
             let _ = tx.send(Report::Lobby(Box::new(draft)));
@@ -235,6 +295,7 @@ fn look(
 
 /// Every replay the store has not seen. A lobby that forms while this runs is answered
 /// between files rather than after the last one.
+#[allow(clippy::too_many_arguments)]
 fn backfill(
     store: &Store,
     cfg: &w2b_core::Config,
@@ -244,6 +305,8 @@ fn backfill(
     orders: &Receiver<Command>,
     me: Option<&str>,
     reader: &mut screen::Reader,
+    from_file: &mut Vec<String>,
+    on_screen: &mut Vec<String>,
 ) {
     let known = match store.known() {
         Ok(known) => known,
@@ -263,7 +326,7 @@ fn backfill(
             return;
         }
         for event in events.try_iter() {
-            handle(store, cfg, tx, me, reader, event);
+            handle(store, cfg, tx, me, reader, event, from_file, on_screen);
         }
         obey(store, tx, orders);
         if !submit(store, path, tx) {

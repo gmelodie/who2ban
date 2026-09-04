@@ -151,7 +151,10 @@ fn a_poor_read_that_can_only_be_one_player_still_names_them() {
     ];
     let found = name::identify("??t?e?sd?s?l??", &pool).expect("only one player fits");
     assert_eq!(found.battletag, "Matheusdasilva#1");
-    assert!(found.score > name::MIN_MARGIN, "the score is meant to be poor here");
+    assert!(
+        found.score > name::MIN_MARGIN,
+        "the score is meant to be poor here"
+    );
     assert!(found.margin >= name::MIN_MARGIN, "margin {}", found.margin);
 }
 
@@ -176,4 +179,82 @@ fn a_read_that_is_mostly_holes_names_nobody() {
     ];
     assert!(!name::legible("?????"));
     assert!(name::identify("?????", &pool).is_none());
+}
+
+/// The client dims a seat once its pick is locked, and a dimmed banner falls away
+/// entirely at the lit cutoff: on the 4K draft this was found on, the lit side put nine
+/// per cent of its pixels over `BRIGHTNESS` and the dimmed side seven tenths of one per
+/// cent, which left `letters` with two blobs and no baseline to fit them to. Every
+/// ally seat read as nothing for the whole draft.
+#[test]
+fn a_dimmed_banner_is_still_read() {
+    // Dimming the fixture is what the client does to a locked seat: the same drawing,
+    // turned down. Two thirds puts it under the lit cutoff and above the lowest rung.
+    let dim =
+        |rgb: Vec<u8>| -> Vec<u8> { rgb.into_iter().map(|v| (v as f32 * 0.66) as u8).collect() };
+
+    let mut lit_reads = 0;
+    for (stem, _) in BANNERS {
+        let (rgb, w, h) = banner(stem);
+        let dimmed = dim(rgb);
+        assert!(
+            !w2b_glyph::read_ladder(&dimmed, w, h, &Atlas::new()).is_empty(),
+            "{stem}: no rung of the ladder read the dimmed banner"
+        );
+        lit_reads += usize::from(w2b_glyph::letters(&dimmed, w, h).is_some());
+    }
+    assert!(
+        lit_reads < BANNERS.len(),
+        "the fixtures are not dim enough to stand for a locked seat"
+    );
+}
+
+/// Reading at one cutoff and filing at another would learn nothing from the seats the
+/// ladder just made readable.
+#[test]
+fn a_dimmed_banner_is_still_learned_from() {
+    let (rgb, w, h) = banner("geemelodie");
+    let dimmed: Vec<u8> = rgb.into_iter().map(|v| (v as f32 * 0.66) as u8).collect();
+
+    let mut atlas = Atlas::new();
+    assert!(
+        w2b_glyph::learn(&dimmed, w, h, "geemelodie", &mut atlas),
+        "a dimmed banner taught nothing"
+    );
+
+    // Measured against the lit banner, not against the length of the name. Dimming does
+    // cost a shape or two the renderer can no longer cut cleanly, and that is the price
+    // of filing a seat which at the lit cutoff alone taught nothing whatsoever.
+    let mut lit = Atlas::new();
+    let (rgb, w, h) = banner("geemelodie");
+    assert!(w2b_glyph::learn(&rgb, w, h, "geemelodie", &mut lit));
+    assert!(
+        atlas.examples() * 5 >= lit.examples() * 4,
+        "dimmed filed {} shapes against the lit banner's {}",
+        atlas.examples(),
+        lit.examples()
+    );
+}
+
+/// The rungs are tried brightest first, so a banner the client has lit reads exactly as
+/// it did before there was a ladder at all.
+#[test]
+fn a_lit_banner_reads_off_the_first_rung() {
+    let mut atlas = Atlas::new();
+    for (stem, truth) in BANNERS {
+        let (rgb, w, h) = banner(stem);
+        w2b_glyph::learn(&rgb, w, h, truth, &mut atlas);
+    }
+    let (rgb, w, h) = banner("geemelodie");
+    let first = w2b_glyph::read_ladder(&rgb, w, h, &atlas)
+        .into_iter()
+        .next()
+        .expect("a lit banner reads");
+    assert_eq!(first.threshold, w2b_glyph::BRIGHTNESS);
+    assert_eq!(
+        first.text,
+        w2b_glyph::read(&rgb, w, h, &atlas)
+            .expect("and reads the same")
+            .text
+    );
 }
