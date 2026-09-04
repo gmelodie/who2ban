@@ -22,11 +22,15 @@ services:
       BASIC_USER: ${BASIC_USER:?set BASIC_USER in .env}
       BASIC_PASS: ${BASIC_PASS:?set BASIC_PASS in .env}
     volumes:
-      - ./deploy/nginx.conf.template:/etc/nginx/nginx.conf.template:ro
-      - ./deploy/nginx-entrypoint.sh:/entrypoint.sh:ro
+      # The folder, not the two files in it. Docker binds a file by its inode, and
+      # `git pull` replaces a file rather than writing through it, so a container given
+      # the file directly goes on reading the version it started with however often the
+      # checkout changes. Bound as a folder, an edited template is visible at once and
+      # the entrypoint reloads it within the minute.
+      - ./deploy:/deploy:ro
       - certs:/etc/letsencrypt
       - acme:/var/www/certbot
-    entrypoint: ["/bin/sh", "/entrypoint.sh"]
+    entrypoint: ["/bin/sh", "/deploy/nginx-entrypoint.sh"]
 
   certbot:
     image: certbot/certbot:latest
