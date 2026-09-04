@@ -3564,12 +3564,14 @@ name = "w2b-web"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "image",
  "serde",
  "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",
  "w2b-core",
+ "w2b-glyph",
 ]
 
 [[package]]

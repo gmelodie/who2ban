@@ -153,7 +153,7 @@ pub struct Shape {
     height: f32,
 }
 
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Atlas {
     /// Keyed by the letter, which serialises as a string because JSON has no char.
     shapes: BTreeMap<String, Vec<Shape>>,
@@ -173,6 +173,15 @@ pub struct Verdict {
     pub distance: f32,
     /// Distance to the best shape of any *other* letter. A small gap is a coin toss.
     pub runner_up: f32,
+}
+
+/// Deriving this filled the cap with nought rather than the default, and a cap of nought
+/// refuses every shape: an atlas built from `default` looked ordinary and could not learn
+/// a single letter for as long as it lived.
+impl Default for Atlas {
+    fn default() -> Atlas {
+        Atlas::new()
+    }
 }
 
 impl Atlas {
@@ -234,6 +243,26 @@ impl Atlas {
             distance,
             runner_up: scored.get(1).map_or(f32::MAX, |s| s.1),
         })
+    }
+
+    /// Take in everything another atlas holds. `learn` already refuses a shape it
+    /// cannot tell apart from one on file and stops at the per-letter cap, so this is
+    /// safe to run every launch and in either direction.
+    pub fn absorb(&mut self, other: &Atlas) {
+        for (letter, shapes) in &other.shapes {
+            let Some(letter) = letter.chars().next() else {
+                continue;
+            };
+            for shape in shapes {
+                self.learn(
+                    letter,
+                    &Glyph {
+                        cells: shape.cells.clone(),
+                        height: shape.height,
+                    },
+                );
+            }
+        }
     }
 
     pub fn load(path: &Path) -> std::io::Result<Atlas> {

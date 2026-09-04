@@ -258,3 +258,51 @@ fn a_lit_banner_reads_off_the_first_rung() {
             .text
     );
 }
+
+/// What one machine learns is shared by committing the atlas, so the file a client keeps
+/// must be a superset of the one shipped to it. That is what makes promoting it a copy
+/// rather than a merge, and it only holds because the seed is absorbed and not merely
+/// fallen back on.
+#[test]
+fn an_absorbed_atlas_keeps_everything_both_held() {
+    let mut shipped = Atlas::new();
+    let (rgb, w, h) = banner("geemelodie");
+    assert!(w2b_glyph::learn(&rgb, w, h, "geemelodie", &mut shipped));
+
+    let mut learned = Atlas::new();
+    let (rgb, w, h) = banner("eumesmo");
+    assert!(w2b_glyph::learn(&rgb, w, h, "eumesmo", &mut learned));
+
+    let (before, letters) = (learned.examples(), learned.letters());
+    learned.absorb(&shipped);
+    assert!(learned.examples() > before, "absorbing taught nothing");
+    assert!(learned.letters() >= letters, "letters were lost");
+    for letter in "geemelodi".chars().chain("eumso".chars()) {
+        assert!(learned.knows(letter), "{letter} was dropped");
+    }
+
+    // Absorbing twice must not double the file: the shapes are already recognised.
+    let settled = learned.examples();
+    learned.absorb(&shipped);
+    assert_eq!(learned.examples(), settled, "the same shapes were filed twice");
+}
+
+/// `Atlas::default` is what a client with no file and a server with no pool both start
+/// from. Derived, it set the per-letter cap to nought, and `learn` refuses a letter that
+/// is already at its cap, so such an atlas silently declined to learn anything at all.
+#[test]
+fn an_atlas_built_from_default_can_still_learn() {
+    let mut atlas = Atlas::default();
+    let (rgb, w, h) = banner("geemelodie");
+    assert!(w2b_glyph::learn(&rgb, w, h, "geemelodie", &mut atlas));
+    assert!(atlas.examples() > 0, "a default atlas learned nothing");
+
+    // And it must take in a pool handed to it, which is the same refusal by another road.
+    let mut empty = Atlas::default();
+    empty.absorb(&atlas);
+    assert_eq!(
+        empty.examples(),
+        atlas.examples(),
+        "absorbing into a default atlas lost everything"
+    );
+}

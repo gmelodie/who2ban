@@ -45,6 +45,8 @@ pub struct Reader {
     screen: Option<w2b_shot::Screen>,
     /// Consecutive looks that found the window and copied nothing off it.
     blank_grabs: u32,
+    /// Banners the last harvest knew the name of and still could not file.
+    unfiled: Vec<(Vec<u8>, String)>,
     /// What the reader last reported, so a steady state is said once rather than every
     /// couple of seconds.
     said: Option<&'static str>,
@@ -60,6 +62,18 @@ fn on_screen(rect: &w2b_shot::Rect, x: usize, y: usize) -> Option<(i16, i16)> {
 
 /// Grumbling on the first blank grab would fire once for every alt-tab.
 const BLANK_GRABS_BEFORE_COMPLAINT: u32 = 5;
+
+/// A banner as a PNG, which is how it travels to a server. `None` when it will not
+/// encode, which costs one banner and nothing else.
+fn as_png(shot: &Shot) -> Option<Vec<u8>> {
+    let buffer: image::RgbImage =
+        image::ImageBuffer::from_raw(shot.w as u32, shot.h as u32, shot.rgb.clone())?;
+    let mut png = std::io::Cursor::new(Vec::new());
+    buffer
+        .write_to(&mut png, image::ImageFormat::Png)
+        .ok()
+        .map(|()| png.into_inner())
+}
 
 /// Players by the name on their banner, which is the battletag without its number.
 fn candidates(tags: &[String]) -> Vec<(String, String)> {
@@ -110,10 +124,14 @@ impl Reader {
     /// not built one yet.
     pub fn open(dir: &Path) -> Reader {
         let path = dir.join("glyphs.json");
-        let atlas = Atlas::load(&path)
-            .ok()
-            .or_else(|| serde_json::from_str(SEED).ok())
-            .unwrap_or_default();
+        // The shipped shapes are folded in on every launch rather than used only when
+        // this machine has learned nothing. As a fallback they reached exactly the users
+        // who needed them least: anyone whose reader had ever worked kept their own file
+        // and never saw a seed that somebody else's learning had improved.
+        let mut atlas = Atlas::load(&path).unwrap_or_default();
+        if let Ok(seed) = serde_json::from_str::<Atlas>(SEED) {
+            atlas.absorb(&seed);
+        }
         Reader {
             atlas,
             path,
@@ -121,6 +139,7 @@ impl Reader {
             unsaved: false,
             screen: w2b_shot::screens().ok().and_then(|s| s.into_iter().next()),
             blank_grabs: 0,
+            unfiled: Vec::new(),
             said: None,
         }
     }
@@ -143,6 +162,29 @@ impl Reader {
 
     pub fn letters_known(&self) -> usize {
         self.atlas.letters()
+    }
+
+    pub fn atlas(&self) -> &Atlas {
+        &self.atlas
+    }
+
+    /// Fold in shapes from elsewhere - the pool on a shared server, most likely. What is
+    /// gained is written out, so the next launch keeps it even offline.
+    pub fn absorb(&mut self, other: &Atlas) -> usize {
+        let before = self.atlas.examples();
+        self.atlas.absorb(other);
+        let gained = self.atlas.examples() - before;
+        if gained > 0 {
+            self.unsaved = true;
+        }
+        gained
+    }
+
+    /// Banners the last harvest could not file, as PNGs, with what they turned out to
+    /// say. A banner is only unfiled because this atlas could not cut it into the right
+    /// number of letters; a pool with more letters in it may well manage.
+    pub fn take_unfiled(&mut self) -> Vec<(Vec<u8>, String)> {
+        std::mem::take(&mut self.unfiled)
     }
 
     /// Grab the game's window and read whatever banners are on it. `None` when there is
@@ -286,6 +328,12 @@ impl Reader {
             if w2b_glyph::learn(&shot.rgb, shot.w, shot.h, name, &mut self.atlas) {
                 taken.push(found.battletag.clone());
                 learned += 1;
+            } else if let Some(png) = as_png(shot) {
+                // Known to be this player, and still unfiled: the shapes did not come to
+                // the same count as the name. Kept as a picture so a fuller atlas than
+                // this one can try.
+                taken.push(found.battletag.clone());
+                self.unfiled.push((png, name.to_string()));
             }
         }
         if learned > 0 {
