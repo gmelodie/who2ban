@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>who2ban admin</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <header>
+      <h1>who2ban</h1>
+      <div id="status" class="status">loading</div>
+    </header>
+
+    <p class="banner">The desktop app watches for a lobby and submits replays. This page
+    configures the database and looks at what it holds.</p>
+
+    <main>
+      <section class="step-body">
+        <h2>Settings</h2>
+        <div id="settings">
+          <label>heroes shown <input id="maxheroes" type="number" min="1" /></label>
+          <label>min games for a winrate <input id="mingames" type="number" min="1" /></label>
+          <label class="check"><input id="allmodes" type="checkbox" /> count every mode</label>
+          <button id="save" type="button">save</button>
+          <p class="paths">These apply to every answer the server gives, the desktop app
+          included.</p>
+        </div>
+      </section>
+
+      <section class="step-body">
+        <h2>Look up a player</h2>
+        <div class="row">
+          <input id="lookup" placeholder="Name#1234" size="20" />
+          <button id="find" type="button">find</button>
+        </div>
+        <div id="player" class="players"></div>
+      </section>
+
+      <section class="step-body">
+        <h2>Latest matches</h2>
+        <table id="recent" class="wide">
+          <thead><tr><th>played</th><th>map</th><th>mode</th><th>players</th><th>files</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </section>
+    </main>
+
+    <footer id="errors"></footer>
+    <script type="module" src="app.js"></script>
+  </body>
+</html>

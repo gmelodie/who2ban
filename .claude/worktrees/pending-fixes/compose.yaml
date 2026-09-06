@@ -1,0 +1,23 @@
+name: who2ban
+
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    expose: ["8731"]
+    environment:
+      RUST_LOG: ${RUST_LOG:-w2b_web=info,w2b_core=info}
+      BASIC_USER: ${BASIC_USER:?set BASIC_USER in .env}
+      BASIC_PASS: ${BASIC_PASS:?set BASIC_PASS in .env}
+    volumes:
+      - data:/data
+
+  # Dials out to Cloudflare, so this machine needs no public address and no open port.
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    depends_on: [app]
+    command: tunnel --no-autoupdate run --token ${TUNNEL_TOKEN:?set TUNNEL_TOKEN in .env}
+
+volumes:
+  data:
