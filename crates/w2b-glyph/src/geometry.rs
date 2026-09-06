@@ -50,14 +50,18 @@ pub fn banners(w: usize, h: usize) -> Vec<(Seat, Box)> {
     }
     BANNERS
         .iter()
-        .filter_map(|(seat, s)| {
-            let x0 = (s.x0 * w as f32).round() as usize;
-            let y0 = (s.y0 * h as f32).round() as usize;
-            let x1 = ((s.x1 * w as f32).round() as usize).min(w);
-            let y1 = ((s.y1 * h as f32).round() as usize).min(h);
-            (x1 > x0 && y1 > y0).then_some((*seat, (x0, y0, x1 - x0, y1 - y0)))
-        })
+        .filter_map(|(seat, s)| region(s, w, h).map(|box_| (*seat, box_)))
         .collect()
+}
+
+/// Where a share of the window falls, in pixels, for a window of this size. `None` when
+/// it rounds away to nothing, which a box of a few thousandths does on a small window.
+pub fn region(s: &Share, w: usize, h: usize) -> Option<Box> {
+    let x0 = (s.x0 * w as f32).round() as usize;
+    let y0 = (s.y0 * h as f32).round() as usize;
+    let x1 = ((s.x1 * w as f32).round() as usize).min(w);
+    let y1 = ((s.y1 * h as f32).round() as usize).min(h);
+    (x1 > x0 && y1 > y0).then_some((x0, y0, x1 - x0, y1 - y0))
 }
 
 #[cfg(test)]

@@ -306,3 +306,24 @@ fn an_atlas_built_from_default_can_still_learn() {
         "absorbing into a default atlas lost everything"
     );
 }
+
+/// A pool of thousands holds hundreds of very short names, so a scrap of screen that
+/// comes out as one of them matches it exactly and wins by a mile. The margin cannot
+/// catch that, because there really is no rival: the read is too small to be about
+/// anybody. This was seating a stranger on the cards every couple of seconds mid-game.
+#[test]
+fn a_read_too_short_to_be_evidence_names_nobody() {
+    let pool = vec![
+        ("ivi".to_string(), "ivi#22986".to_string()),
+        ("geemelodie".to_string(), "geemelodie#1711".to_string()),
+    ];
+    assert!(
+        w2b_glyph::name::identify("ivi", &pool).is_none(),
+        "three letters off a HUD named a player"
+    );
+    assert!(w2b_glyph::name::identify("i?i", &pool).is_none());
+
+    // And a name long enough to be evidence is still read, holes and all.
+    assert!(w2b_glyph::name::identify("geemelodie", &pool).is_some());
+    assert!(w2b_glyph::name::identify("geem?lodie", &pool).is_some());
+}

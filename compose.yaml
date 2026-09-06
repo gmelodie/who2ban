@@ -7,61 +7,17 @@ services:
     expose: ["8731"]
     environment:
       RUST_LOG: ${RUST_LOG:-w2b_web=info,w2b_core=info}
-    volumes:
-      - data:/data
-
-  nginx:
-    image: nginx:1.29-alpine
-    restart: unless-stopped
-    depends_on: [app]
-    ports:
-      - "80:80"
-      - "443:443"
-    environment:
-      DOMAIN: ${DOMAIN:?set DOMAIN in .env}
       BASIC_USER: ${BASIC_USER:?set BASIC_USER in .env}
       BASIC_PASS: ${BASIC_PASS:?set BASIC_PASS in .env}
     volumes:
-      # The folder, not the two files in it. Docker binds a file by its inode, and
-      # `git pull` replaces a file rather than writing through it, so a container given
-      # the file directly goes on reading the version it started with however often the
-      # checkout changes. Bound as a folder, an edited template is visible at once and
-      # the entrypoint reloads it within the minute.
-      - ./deploy:/deploy:ro
-      - certs:/etc/letsencrypt
-      - acme:/var/www/certbot
-    entrypoint: ["/bin/sh", "/deploy/nginx-entrypoint.sh"]
+      - data:/data
 
-  certbot:
-    image: certbot/certbot:latest
+  # Dials out to Cloudflare, so this machine needs no public address and no open port.
+  tunnel:
+    image: cloudflare/cloudflared:latest
     restart: unless-stopped
-    depends_on: [nginx]
-    environment:
-      DOMAIN: ${DOMAIN:?set DOMAIN in .env}
-      EMAIL: ${EMAIL:?set EMAIL in .env}
-      STAGING: ${STAGING:-0}
-    volumes:
-      - certs:/etc/letsencrypt
-      - acme:/var/www/certbot
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - |
-        set -e
-        staging=""
-        [ "$$STAGING" = "1" ] && staging="--staging"
-        while :; do
-          if [ ! -d "/etc/letsencrypt/live/$$DOMAIN" ]; then
-            echo "asking for a certificate for $$DOMAIN"
-            certbot certonly --webroot -w /var/www/certbot \
-              -d "$$DOMAIN" --email "$$EMAIL" \
-              --agree-tos --no-eff-email --non-interactive $$staging || true
-          else
-            certbot renew --webroot -w /var/www/certbot || true
-          fi
-          sleep 12h
-        done
+    depends_on: [app]
+    command: tunnel --no-autoupdate run --token ${TUNNEL_TOKEN:?set TUNNEL_TOKEN in .env}
 
 volumes:
   data:
-  certs:
-  acme:

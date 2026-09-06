@@ -28,6 +28,19 @@ pub const UNREAD_COST: f32 = 0.5;
 /// up to a match.
 pub const MAX_UNREAD_SHARE: f32 = 0.60;
 
+/// Letters that have to be placed before a read may name anybody at all.
+///
+/// A short read is not weak evidence, it is barely evidence: a pool of thousands holds
+/// hundreds of names of three and four letters, so a smear of screen that happens to come
+/// out as one of them matches it outright, scores nought, and wins by a mile. The margin
+/// cannot save this, because there genuinely is no second candidate; the read is simply
+/// too small to be about anyone.
+///
+/// The cost is that a player whose name really is three letters cannot be read off the
+/// screen. That is the right way round: they are named by the battlelobby a minute later
+/// like everybody else, and until then a blank seat is better than a stranger's card.
+pub const MIN_PLACED: usize = 4;
+
 /// The letter a reader writes for one it could not place.
 pub const UNREAD: char = '?';
 
@@ -83,6 +96,9 @@ pub fn legible(reading: &str) -> bool {
         return false;
     }
     let holes = reading.chars().filter(|c| *c == UNREAD).count();
+    if total - holes < MIN_PLACED {
+        return false;
+    }
     (holes as f32 / total as f32) <= MAX_UNREAD_SHARE
 }
 

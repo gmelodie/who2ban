@@ -1,3 +1,4 @@
+mod auth;
 mod routes;
 mod state;
 
@@ -13,6 +14,9 @@ use w2b_core::{Config, Db, paths};
 const INDEX: &str = include_str!("../../../ui/index.html");
 const APP_JS: &str = include_str!("../../../ui/app.js");
 const STYLE: &str = include_str!("../../../ui/style.css");
+
+/// A pool of shapes, and a draft of ten banners as PNG, both run to several megabytes.
+const GLYPH_LIMIT: usize = 32 * 1024 * 1024;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -63,15 +67,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/note", axum::routing::put(routes::put_note))
         .route(
             "/api/glyphs",
-            get(routes::get_glyphs).post(routes::post_glyphs),
+            get(routes::get_glyphs)
+                .post(routes::post_glyphs)
+                .layer(axum::extract::DefaultBodyLimit::max(GLYPH_LIMIT)),
         )
-        // A draft of ten banners runs to a few megabytes of PNG, well past axum's
-        // default two.
         .route(
             "/api/glyphs/banners",
-            post(routes::post_banners).layer(axum::extract::DefaultBodyLimit::max(32 * 1024 * 1024)),
+            post(routes::post_banners).layer(axum::extract::DefaultBodyLimit::max(GLYPH_LIMIT)),
         )
         .with_state(app);
+
+    let router = match auth::wanted() {
+        Some(header) => router.layer(axum::middleware::from_fn_with_state(header, auth::guard)),
+        None => {
+            tracing::warn!("BASIC_USER is unset: this server asks for no login");
+            router
+        }
+    };
 
     let addr = std::env::var("W2B_ADDR").unwrap_or_else(|_| "127.0.0.1:8731".to_string());
     let listener = tokio::net::TcpListener::bind(&addr).await?;

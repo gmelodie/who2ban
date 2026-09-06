@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod chrome;
 mod heroes;
 mod screen;
 mod settings;
@@ -54,6 +55,14 @@ struct Edit {
     battletag: String,
     note: w2b_core::PlayerNote,
     save: bool,
+}
+
+/// A seat the reader named wrongly, or never named, put right by hand. The slot rather
+/// than the battletag identifies it: the whole point is that the battletag on the card is
+/// the wrong one, and a seat nobody was placed in has none at all.
+struct Correction {
+    slot: u8,
+    battletag: String,
 }
 
 struct App {
@@ -460,14 +469,16 @@ impl eframe::App for App {
         // borrow of `self.draft` held across the whole panel would not allow.
         let draft = self.draft.take();
         let mut edits: Vec<Edit> = Vec::new();
+        let mut fixes: Vec<Correction> = Vec::new();
         egui::CentralPanel::default()
             .frame(theme::central(ui.style()))
             .show(ui, |ui| match &draft {
-                Some(shown) => self.draw_draft(ui, shown, &mut edits),
+                Some(shown) => self.draw_draft(ui, shown, &mut edits, &mut fixes),
                 None => self.draw_searching(ui),
             });
         self.draft = draft;
         self.apply(edits);
+        self.put_right(fixes);
     }
 }
 
@@ -507,6 +518,20 @@ impl App {
                 worker.send(worker::Command::SaveNote {
                     battletag: edit.battletag,
                     note: edit.note,
+                });
+            }
+        }
+    }
+
+    /// Hand a corrected name to the worker, which is where the banner still is. The card
+    /// is not touched here: the worker re-seats the draft and sends it back, so what is
+    /// shown is what was actually understood.
+    fn put_right(&mut self, fixes: Vec<Correction>) {
+        for fix in fixes {
+            if let Some(worker) = &self.worker {
+                worker.send(worker::Command::Correct {
+                    slot: fix.slot,
+                    battletag: fix.battletag,
                 });
             }
         }
@@ -640,7 +665,13 @@ impl App {
             });
     }
 
-    fn draw_draft(&self, ui: &mut egui::Ui, draft: &Draft, edits: &mut Vec<Edit>) {
+    fn draw_draft(
+        &self,
+        ui: &mut egui::Ui,
+        draft: &Draft,
+        edits: &mut Vec<Edit>,
+        fixes: &mut Vec<Correction>,
+    ) {
         if draft.my_team.is_none() {
             ui.label(
                 egui::RichText::new(
@@ -660,14 +691,14 @@ impl App {
             match draft.my_team {
                 None => {
                     let all: Vec<&DraftPlayer> = draft.players.iter().collect();
-                    self.draw_group(ui, None, theme::Side::Unknown, &all, edits);
+                    self.draw_group(ui, None, theme::Side::Unknown, &all, edits, fixes);
                 }
                 Some(_) => {
                     let enemies: Vec<&DraftPlayer> = draft.enemies().collect();
                     let allies: Vec<&DraftPlayer> = draft.allies().collect();
-                    self.draw_group(ui, Some("Enemies"), theme::Side::Enemy, &enemies, edits);
+                    self.draw_group(ui, Some("Enemies"), theme::Side::Enemy, &enemies, edits, fixes);
                     ui.add_space(14.0);
-                    self.draw_group(ui, Some("Your team"), theme::Side::Ally, &allies, edits);
+                    self.draw_group(ui, Some("Your team"), theme::Side::Ally, &allies, edits, fixes);
                 }
             }
         });
@@ -680,6 +711,7 @@ impl App {
         side: theme::Side,
         shown: &[&DraftPlayer],
         edits: &mut Vec<Edit>,
+        fixes: &mut Vec<Correction>,
     ) {
         if shown.is_empty() {
             return;
@@ -711,7 +743,7 @@ impl App {
                     ui.allocate_ui_with_layout(
                         egui::vec2(card, 0.0),
                         egui::Layout::top_down(egui::Align::Min),
-                        |ui| self.draw_player(ui, player, side, edits),
+                        |ui| self.draw_player(ui, player, side, edits, fixes),
                     );
                 }
             });
@@ -721,6 +753,43 @@ impl App {
 
     /// The hero this player just finished a game on, so the card can be tied to a face
     /// from the match instead of to a battletag nobody read at the time.
+    /// The field a corrected name is typed into, shown only for the card whose pencil is
+    /// open. Enter commits, because a name half typed is not a correction.
+    fn draw_correction(
+        &self,
+        ui: &mut egui::Ui,
+        player: &DraftPlayer,
+        fixes: &mut Vec<Correction>,
+    ) {
+        let open_id = egui::Id::new(("correcting", player.slot));
+        if !ui.data(|d| d.get_temp::<bool>(open_id).unwrap_or(false)) {
+            return;
+        }
+        let text_id = egui::Id::new(("correction", player.slot));
+        let mut typed = ui.data(|d| d.get_temp::<String>(text_id).unwrap_or_default());
+
+        ui.add_space(3.0);
+        let field = ui.add(
+            egui::TextEdit::singleline(&mut typed)
+                .hint_text("the name on the banner")
+                .desired_width(f32::INFINITY),
+        );
+        ui.data_mut(|d| d.insert_temp(text_id, typed.clone()));
+
+        let entered = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+        if entered && !typed.trim().is_empty() {
+            fixes.push(Correction {
+                slot: player.slot,
+                battletag: typed.trim().to_string(),
+            });
+            ui.data_mut(|d| {
+                d.insert_temp(text_id, String::new());
+                d.insert_temp(open_id, false);
+            });
+        }
+        ui.add_space(3.0);
+    }
+
     fn hero_of(&self, player: &DraftPlayer) -> Option<&PlayedHero> {
         self.recap
             .as_ref()?
@@ -735,6 +804,7 @@ impl App {
         player: &DraftPlayer,
         side: theme::Side,
         edits: &mut Vec<Edit>,
+        fixes: &mut Vec<Correction>,
     ) {
         let name_color = match side {
             theme::Side::Unknown => theme::TEXT,
@@ -761,8 +831,19 @@ impl App {
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.label(egui::RichText::new(games(player.games)).color(theme::DIM));
+                        // Kept to a glyph: it sits on every card, and most cards are right.
+                        let open_id = egui::Id::new(("correcting", player.slot));
+                        let open = ui.data(|d| d.get_temp::<bool>(open_id).unwrap_or(false));
+                        if ui
+                            .small_button("\u{270e}")
+                            .on_hover_text("wrong name? put it right, and teach the reader")
+                            .clicked()
+                        {
+                            ui.data_mut(|d| d.insert_temp(open_id, !open));
+                        }
                     });
                 });
+                self.draw_correction(ui, player, fixes);
                 if let Some(seat) = self.hero_of(player) {
                     ui.add_space(3.0);
                     ui.horizontal(|ui| {
@@ -778,11 +859,20 @@ impl App {
                             );
                         }
                         ui.label(
-                            egui::RichText::new(format!("played {}", seat.hero))
+                            egui::RichText::new(seat.hero.clone())
                                 .italics()
                                 .size(13.0)
                                 .color(theme::BLUE),
                         );
+                        if seat.mvp {
+                            ui.label(
+                                egui::RichText::new("MVP")
+                                    .strong()
+                                    .size(11.0)
+                                    .color(theme::YELLOW),
+                            )
+                            .on_hover_text("the game gave them MVP of this match");
+                        }
                     });
                 }
                 ui.separator();

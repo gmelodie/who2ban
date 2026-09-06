@@ -38,12 +38,19 @@ pub fn replay_bytes(bytes: Vec<u8>) -> Result<MatchRecord> {
     // The names in `details` are in the language of whoever saved the file, so the same
     // hero arrives as Deathwing from one client and Asa da Morte from the next. These
     // codes are game data, not text, and every client writes the same ones.
-    let units = hero_units(protocol, &archive);
+    let found = tracked(protocol, &archive);
     let players = entries
         .iter()
         .zip(tags)
         .enumerate()
-        .map(|(i, (entry, battletag))| player(entry, battletag, units.get(i).cloned().flatten()))
+        .map(|(i, (entry, battletag))| {
+            player(
+                entry,
+                battletag,
+                found.heroes.get(i).cloned().flatten(),
+                found.mvp.get(i).copied().unwrap_or(false),
+            )
+        })
         .collect::<Result<Vec<_>>>()?;
 
     let init = init_data(protocol, &archive);
@@ -100,53 +107,100 @@ fn map_id(init: &Value) -> Option<u64> {
         .map(|sum| sum as u64)
 }
 
-/// The hero each player started the match as, named the way the game data names it:
-/// `HeroWitchDoctor` whatever language the client that saved the file was set to. Taken
-/// from the tracker stream because the lobby attribute that also carries it is filled in
-/// for the local player alone in some builds, and one hero out of ten is worse than none.
-/// Keyed by `m_controlPlayerId`, which is the `m_playerList` slot plus one.
-fn hero_units(
-    protocol: &'static Protocol,
-    archive: &heroprotocol::mpq::Archive,
-) -> Vec<Option<String>> {
+/// What the tracker stream has to say about the ten players, by `m_playerList` slot.
+struct Tracked {
+    /// The hero each started the match as, named the way the game data names it:
+    /// `HeroWitchDoctor` whatever language the client that saved the file was set to.
+    /// Taken from here because the lobby attribute that also carries it is filled in for
+    /// the local player alone in some builds, and one hero out of ten is worse than none.
+    heroes: Vec<Option<String>>,
+    /// Who the game gave the MVP award to, which is the one thing a scoreboard says that
+    /// nothing else in the replay does.
+    mvp: Vec<bool>,
+}
+
+/// One walk of the tracker stream for both.
+///
+/// This used to stop the moment all ten heroes had been seen, which is early: they are
+/// born in the first seconds. The award is announced in the last event of the match, so
+/// there is no stopping short of the end any more, and a replay costs a full decode of
+/// the stream rather than a few seconds of it.
+fn tracked(protocol: &'static Protocol, archive: &heroprotocol::mpq::Archive) -> Tracked {
+    let mut found = Tracked {
+        heroes: vec![None; LOBBY_SIZE],
+        mvp: vec![false; LOBBY_SIZE],
+    };
     let Ok(data) = stream(archive, "replay.tracker.events") else {
-        return Vec::new();
+        return found;
     };
 
-    let mut born: Vec<Option<String>> = vec![None; LOBBY_SIZE];
-    let mut left = LOBBY_SIZE;
     for event in protocol.decode_replay_tracker_events(&data) {
         let Ok(event) = event else { continue };
-        if event_name(&event).as_deref() != Some(UNIT_BORN) {
+        match event_name(&event).as_deref() {
+            Some(UNIT_BORN) => born(&event, &mut found.heroes),
+            Some(SCORE_RESULT) => award(&event, MVP, &mut found.mvp),
+            _ => {}
+        }
+    }
+    found
+}
+
+/// The hero a player was first born in, which is the one they drafted. That is the
+/// difference that matters to the heroes which change shape mid-fight.
+fn born(event: &Value, heroes: &mut [Option<String>]) {
+    let Some(unit) = text(event, "m_unitTypeName") else {
+        return;
+    };
+    // A hero and nothing else: minions and structures are born in this stream too.
+    if !unit.starts_with("Hero") || unit.len() <= 4 {
+        return;
+    }
+    // `m_controlPlayerId` is the `m_playerList` slot plus one.
+    let Some(slot) = int(event, "m_controlPlayerId")
+        .filter(|owner| (1..=LOBBY_SIZE as i64).contains(owner))
+        .map(|owner| owner as usize - 1)
+    else {
+        return;
+    };
+    if heroes[slot].is_none() {
+        heroes[slot] = Some(unit);
+    }
+}
+
+/// One award out of a score result, as a flag per slot.
+///
+/// The stream carries the score result more than once and the earlier ones are all
+/// noughts, so the flags are gathered rather than replaced: whichever event names the
+/// winner, the winner stays named.
+fn award(event: &Value, wanted: &str, into: &mut [bool]) {
+    let Some(list) = event.get("m_instanceList").and_then(array) else {
+        return;
+    };
+    for instance in list {
+        if text(instance, "m_name").map(|n| n.trim().to_string()).as_deref() != Some(wanted) {
             continue;
         }
-        let Some(unit) = text(&event, "m_unitTypeName") else {
+        let Some(rows) = instance.get("m_values").and_then(array) else {
             continue;
         };
-        // A hero and nothing else: minions and structures are born in this stream too.
-        if !unit.starts_with("Hero") || unit.len() <= 4 {
-            continue;
-        }
-        let Some(slot) = int(&event, "m_controlPlayerId")
-            .filter(|owner| (1..=LOBBY_SIZE as i64).contains(owner))
-            .map(|owner| owner as usize - 1)
-        else {
-            continue;
-        };
-        // The first body a player is born in is the one they drafted, which is the
-        // difference that matters to the heroes that change shape mid-fight.
-        if born[slot].is_none() {
-            born[slot] = Some(unit);
-            left -= 1;
-            if left == 0 {
-                break;
+        for (slot, row) in rows.iter().take(LOBBY_SIZE).enumerate() {
+            let won = array(row)
+                .and_then(<[Value]>::first)
+                .and_then(|cell| int(cell, "m_value"))
+                .is_some_and(|value| value == 1);
+            if won {
+                into[slot] = true;
             }
         }
     }
-    born
 }
 
 const UNIT_BORN: &str = "NNet.Replay.Tracker.SUnitBornEvent";
+const SCORE_RESULT: &str = "NNet.Replay.Tracker.SScoreResultEvent";
+
+/// The award as the game data names it. There are forty others in the same event, all of
+/// them the runner-up prizes the scoreboard hands out; this is the one anybody means.
+const MVP: &str = "EndOfMatchAwardMVPBoolean";
 
 fn event_name(event: &Value) -> Option<String> {
     match event.get("_event")? {
@@ -166,6 +220,7 @@ fn player(
     entry: &Value,
     battletag: Option<String>,
     hero_id: Option<String>,
+    mvp: bool,
 ) -> Result<MatchPlayer> {
     let toon = entry
         .get("m_toon")
@@ -183,6 +238,7 @@ fn player(
         },
         team: int(entry, "m_teamId").unwrap_or(0) as u8,
         won: int(entry, "m_result") == Some(1),
+        mvp,
     })
 }
 

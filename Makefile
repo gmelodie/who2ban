@@ -1,7 +1,7 @@
 .DEFAULT_GOAL := up
 .PHONY: up down logs app-logs serve app test check dist atlas
 
-# https on 443, behind nginx and a Let's Encrypt certificate.
+# The console on your own machine, reached over a Cloudflare tunnel.
 up: .env
 	docker compose up -d --build
 	@echo "https://$$(grep -E '^DOMAIN=' .env | cut -d= -f2)"

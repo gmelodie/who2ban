@@ -8,6 +8,8 @@
 use std::path::{Path, PathBuf};
 
 use w2b_glyph::{Atlas, Reading, geometry, name};
+
+use crate::chrome;
 use w2b_parse::{Lobby, LobbyPlayer};
 
 /// The title the client gives its window.
@@ -37,8 +39,9 @@ struct Shot {
 pub struct Reader {
     atlas: Atlas,
     path: PathBuf,
-    /// The last draft seen, waiting to be told what it said.
-    seen: Vec<Shot>,
+    /// The last draft seen, waiting to be told what it said, each banner under the slot
+    /// it was cut from so a correction aimed at one card reaches the right picture.
+    seen: Vec<(u8, Shot)>,
     unsaved: bool,
     /// Held open across looks: the display is asked every couple of seconds for as long
     /// as the program runs.
@@ -50,6 +53,15 @@ pub struct Reader {
     /// What the reader last reported, so a steady state is said once rather than every
     /// couple of seconds.
     said: Option<&'static str>,
+    /// Whether the last look found the client sitting on one of its own menus. A look
+    /// gives nothing for several reasons and only this one means the match is over.
+    menu: bool,
+}
+
+/// The slot a seat holds in a lobby, which is how everything downstream of the screen
+/// names it. The left panel is slots 0 to 4 and the right panel 5 to 9.
+fn slot_of(seat: &geometry::Seat) -> u8 {
+    seat.row + u8::from(seat.right_hand) * 5
 }
 
 /// Where a banner sits on the desktop, or `None` if that is off the edge of it.
@@ -83,6 +95,30 @@ fn candidates(tags: &[String]) -> Vec<(String, String)> {
             (name.to_string(), tag.clone())
         })
         .collect()
+}
+
+/// How the banners that could be read line up with the slots the battlelobby gave them:
+/// how many named the player the file seats there, and how many named somebody else.
+///
+/// The second number is the one that matters. A single clash says the file's slot order
+/// and the screen's are not the same order, and every name filed by slot after that would
+/// go on the wrong picture - and then on to the shared pool, where nobody can take it
+/// back. Banners that read as nothing count as neither: they are the ones with nothing to
+/// say about the ordering, and the ones the filing is for.
+fn agreement(slots: &[u8], read: &[Option<String>], truth: &[String]) -> (usize, usize) {
+    let mut agreed = 0;
+    let mut clashed = 0;
+    for (slot, read) in slots.iter().zip(read) {
+        let (Some(read), Some(seat)) = (read, truth.get(usize::from(*slot))) else {
+            continue;
+        };
+        if read == seat {
+            agreed += 1;
+        } else {
+            clashed += 1;
+        }
+    }
+    (agreed, clashed)
 }
 
 /// The reading to believe out of the ones the ladder produced.
@@ -141,6 +177,7 @@ impl Reader {
             blank_grabs: 0,
             unfiled: Vec::new(),
             said: None,
+            menu: false,
         }
     }
 
@@ -152,6 +189,12 @@ impl Reader {
             self.said = Some(what);
             tracing::info!(state = what, "draft reader");
         }
+    }
+
+    /// Whether the last look found a menu, which is the one way of finding no draft that
+    /// means the match in front of this program has finished.
+    pub fn saw_menu(&self) -> bool {
+        self.menu
     }
 
     /// Whether there is anything to read with. A machine under Wayland, or with no
@@ -180,11 +223,69 @@ impl Reader {
         gained
     }
 
+    /// File the banner at this slot under a name the user has vouched for.
+    ///
+    /// The same filing `harvest` does, with the person at the keyboard standing in for
+    /// the battlelobby. It is the better teacher of the two: it arrives while the draft
+    /// is still on the screen, it needs no read to have half worked first, and it can
+    /// name the letters this atlas has never seen, which are exactly the ones stopping it
+    /// from reading that banner in the first place.
+    ///
+    /// `false` when there is no banner for that slot, or when the shapes on it do not
+    /// come to the same count as the name, which teaches nothing rather than teaching a
+    /// letter the wrong shape.
+    pub fn teach(&mut self, slot: u8, name: &str) -> bool {
+        let Some((_, shot)) = self.seen.iter().find(|(at, _)| *at == slot) else {
+            return false;
+        };
+        let rgb = shot.rgb.clone();
+        let (w, h) = (shot.w, shot.h);
+        let filed = w2b_glyph::learn(&rgb, w, h, name, &mut self.atlas);
+        if filed {
+            self.unsaved = true;
+        }
+        filed
+    }
+
+    /// Drop the banners in hand without filing them. What was read while the battlelobby
+    /// stands is the HUD, not a draft, and a shape learned from it would be filed under a
+    /// letter it never was.
+    pub fn forget(&mut self) {
+        self.seen.clear();
+    }
+
     /// Banners the last harvest could not file, as PNGs, with what they turned out to
     /// say. A banner is only unfiled because this atlas could not cut it into the right
     /// number of letters; a pool with more letters in it may well manage.
     pub fn take_unfiled(&mut self) -> Vec<(Vec<u8>, String)> {
         std::mem::take(&mut self.unfiled)
+    }
+
+    /// Whether the client is showing one of its own menus rather than a draft, which it
+    /// says by drawing the Nexus button in its top-left corner.
+    ///
+    /// Every way of failing to look answers no. A corner that cannot be grabbed is not
+    /// evidence of a menu, and the reader should be no worse off than it was before this
+    /// was asked at all.
+    fn on_a_menu(&self, rect: &w2b_shot::Rect) -> bool {
+        let Some(screen) = self.screen.as_ref() else {
+            return false;
+        };
+        let Some((x, y, w, h)) = chrome::badge_box(usize::from(rect.w), usize::from(rect.h))
+        else {
+            return false;
+        };
+        let Some((sx, sy)) = on_screen(rect, x, y) else {
+            return false;
+        };
+        let Ok(cut) = screen.grab_region(sx, sy, w as u16, h as u16) else {
+            return false;
+        };
+        let Some(alike) = chrome::badge_likeness(&cut.rgb, cut.w, cut.h) else {
+            return false;
+        };
+        tracing::debug!(alike, threshold = chrome::ALIKE, "menu badge");
+        alike >= chrome::ALIKE
     }
 
     /// Grab the game's window and read whatever banners are on it. `None` when there is
@@ -194,6 +295,7 @@ impl Reader {
     /// is depends on whether the client has the seat lit, and that changes seat by seat
     /// as picks lock in.
     pub fn look(&mut self, pool: &[String]) -> Option<Vec<(geometry::Seat, String)>> {
+        self.menu = false;
         if self.screen.is_none() {
             self.say("no screen to read");
             return None;
@@ -203,9 +305,17 @@ impl Reader {
             self.say("no game window");
             return None;
         };
+        // One small grab, before the ten, to find out whether there is a draft to read at
+        // all. Without it a menu's scenery reads as three seats and gets published as a
+        // lobby the user is nowhere near.
+        self.menu = self.on_a_menu(&rect);
+        if self.menu {
+            self.say("the client is on a menu, not in a draft");
+            return None;
+        }
         let screen = self.screen.as_ref()?;
 
-        let mut shots = Vec::new();
+        let mut shots: Vec<(u8, Shot)> = Vec::new();
         let mut reads = Vec::new();
         let mut drawn = false;
         // Only the ten banners are copied, not the screen they sit on. Taking the whole
@@ -225,15 +335,23 @@ impl Reader {
             }
             drawn = true;
             let ladder = w2b_glyph::read_ladder(&cut.rgb, cut.w, cut.h, &self.atlas);
-            let Some(reading) = best_read(ladder, &candidates) else {
-                continue;
-            };
-            reads.push((seat, reading.text));
-            shots.push(Shot {
-                rgb: cut.rgb,
-                w: cut.w,
-                h: cut.h,
-            });
+            let read = best_read(ladder, &candidates);
+            // Kept whether or not it read. A banner this atlas cannot make a name of is
+            // the one banner worth keeping: its letters are the ones the atlas is
+            // missing, and the battlelobby is about to say what they are. Dropping it
+            // here is what held the reader to the letters it already had, because every
+            // banner it ever learned from was one it could already read.
+            shots.push((
+                slot_of(&seat),
+                Shot {
+                    rgb: cut.rgb,
+                    w: cut.w,
+                    h: cut.h,
+                },
+            ));
+            if let Some(reading) = read {
+                reads.push((seat, reading.text));
+            }
         }
 
         if !drawn {
@@ -279,11 +397,10 @@ impl Reader {
             {
                 continue;
             }
-            let team = u8::from(seat.right_hand);
             players.push(LobbyPlayer {
                 battletag: found.battletag,
-                team,
-                slot: seat.row + team * 5,
+                team: u8::from(seat.right_hand),
+                slot: slot_of(seat),
             });
         }
 
@@ -297,42 +414,70 @@ impl Reader {
     /// Mark the reader's homework. The battlelobby names the ten seats, so every banner
     /// still in hand can be filed under what it actually said.
     ///
-    /// Each banner is read again against the ten names alone, which is a small enough
-    /// field to be nearly certain about, and only a confident and unrepeated answer is
-    /// learned from. A shape filed under the wrong letter is never unlearned.
+    /// The names come from the file by slot, not from reading the banner. This used to
+    /// read each banner again and file it under whoever that named, which meant a banner
+    /// only ever taught the atlas letters it could already spell out - and the ones it
+    /// could not were the entire point. A reader that cannot read `Trollmllaman` learns
+    /// nothing from `Trollmllaman` until something else tells it that is what the banner
+    /// says, and at load the file does exactly that.
+    ///
+    /// A shape filed under the wrong letter is never unlearned, and what is learned here
+    /// goes on to the shared pool, so `by_slot` below refuses the whole lobby rather than
+    /// file one banner on an assumption a read has contradicted.
     pub fn harvest(&mut self, truth: &[String]) -> usize {
         if self.seen.is_empty() || truth.is_empty() {
             return 0;
         }
         let candidates = candidates(truth);
+        // Taken in one pass and never revisited: the banners are gone after this.
+        let seen = std::mem::take(&mut self.seen);
+
+        // The banners are still read, but no longer to find out who they are - the file
+        // says that. They are read to check the one thing this rests on: that the file
+        // seats its ten in the same slots the screen does.
+        let read: Vec<Option<String>> = seen
+            .iter()
+            .map(|(_, shot)| self.read_name(shot, &candidates))
+            .collect();
+        let slots: Vec<u8> = seen.iter().map(|(slot, _)| *slot).collect();
+        let (agreed, clashed) = agreement(&slots, &read, truth);
+        let by_slot = clashed == 0;
+        if by_slot {
+            tracing::debug!(agreed, banners = seen.len(), "banners named by the lobby");
+        } else {
+            tracing::warn!(
+                agreed,
+                clashed,
+                "the battlelobby seats its players in a different order than the screen \
+                 does, so the banners are filed only under what they read as"
+            );
+        }
 
         let mut taken: Vec<String> = Vec::new();
         let mut learned = 0;
-        // Taken in one pass and never revisited: the banners are gone after this.
-        let seen = std::mem::take(&mut self.seen);
-        for shot in &seen {
-            let ladder = w2b_glyph::read_ladder(&shot.rgb, shot.w, shot.h, &self.atlas);
-            let Some(reading) = best_read(ladder, &candidates) else {
+        for ((slot, shot), read) in seen.iter().zip(read) {
+            // The file when its slots can be trusted, and otherwise what the banner made
+            // of itself. A banner that read as nothing has no second answer.
+            let named = match by_slot {
+                true => truth.get(usize::from(*slot)).cloned().or(read),
+                false => read,
+            };
+            let Some(battletag) = named else {
                 continue;
             };
-            let Some(found) = name::identify(&reading.text, &candidates) else {
-                continue;
-            };
-            if taken.contains(&found.battletag) {
+            if taken.contains(&battletag) {
                 continue;
             }
-            let name = found
-                .battletag
+            taken.push(battletag.clone());
+            let name = battletag
                 .split_once('#')
-                .map_or(found.battletag.as_str(), |(n, _)| n);
+                .map_or(battletag.as_str(), |(n, _)| n);
             if w2b_glyph::learn(&shot.rgb, shot.w, shot.h, name, &mut self.atlas) {
-                taken.push(found.battletag.clone());
                 learned += 1;
             } else if let Some(png) = as_png(shot) {
                 // Known to be this player, and still unfiled: the shapes did not come to
                 // the same count as the name. Kept as a picture so a fuller atlas than
                 // this one can try.
-                taken.push(found.battletag.clone());
                 self.unfiled.push((png, name.to_string()));
             }
         }
@@ -340,6 +485,14 @@ impl Reader {
             self.unsaved = true;
         }
         learned
+    }
+
+    /// Who a banner reads as, or `None` when this atlas can make no name of it. Only
+    /// `harvest` asks, and only to check the file's slots against the screen's.
+    fn read_name(&self, shot: &Shot, candidates: &[(String, String)]) -> Option<String> {
+        let ladder = w2b_glyph::read_ladder(&shot.rgb, shot.w, shot.h, &self.atlas);
+        let reading = best_read(ladder, candidates)?;
+        name::identify(&reading.text, candidates).map(|found| found.battletag)
     }
 
     /// Written only when there is something new in it.
@@ -366,6 +519,56 @@ mod tests {
             .iter()
             .map(|s| s.to_string())
             .collect()
+    }
+
+    fn truth() -> Vec<String> {
+        pool().into_iter().take(3).collect()
+    }
+
+    fn reads(names: [Option<&str>; 3]) -> Vec<Option<String>> {
+        names.iter().map(|n| n.map(str::to_string)).collect()
+    }
+
+    /// Every banner that could be read names the player the file seats in that slot, so
+    /// the two orders are the same order and the rest may be filed by slot.
+    #[test]
+    fn reads_that_match_their_slots_leave_the_filing_alone() {
+        let (agreed, clashed) = agreement(
+            &[0, 1, 2],
+            &reads([Some("geemelodie#1711"), None, Some("eumesmo#1338")]),
+            &truth(),
+        );
+        assert_eq!(clashed, 0);
+        assert_eq!(agreed, 2);
+    }
+
+    /// Nothing could be read at all, which is the state a fresh atlas is in. There is no
+    /// evidence against the slots, so the file gets to name all ten - that is the whole
+    /// point of harvesting at load.
+    #[test]
+    fn banners_that_read_as_nothing_do_not_veto_the_slots() {
+        let (agreed, clashed) = agreement(&[0, 1, 2], &reads([None, None, None]), &truth());
+        assert_eq!((agreed, clashed), (0, 0));
+    }
+
+    /// One banner names somebody the file seats elsewhere. That is enough: filing by slot
+    /// would teach the wrong shapes and then hand them to the shared pool.
+    #[test]
+    fn one_read_in_the_wrong_seat_vetoes_the_lot() {
+        let (_, clashed) = agreement(
+            &[0, 1, 2],
+            &reads([Some("SageLion#115872"), None, Some("eumesmo#1338")]),
+            &truth(),
+        );
+        assert!(clashed > 0);
+    }
+
+    /// A screen slot the file has no seat for says nothing either way, rather than
+    /// counting as a clash and throwing the lobby away.
+    #[test]
+    fn a_slot_the_file_never_named_is_not_a_clash() {
+        let (agreed, clashed) = agreement(&[9], &reads([Some("Caive#1258"), None, None]), &truth());
+        assert_eq!((agreed, clashed), (0, 0));
     }
 
     #[test]

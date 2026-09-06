@@ -1,3 +1,4 @@
+pub mod base64;
 pub mod config;
 pub mod db;
 pub mod draft;

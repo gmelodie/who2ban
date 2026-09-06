@@ -86,6 +86,11 @@ pub struct MatchPlayer {
     pub toon: Toon,
     pub team: u8,
     pub won: bool,
+    /// Whether the game gave this player the MVP of the match. `false` from a replay
+    /// parsed before this was read, which is not the same as having been told they lost
+    /// it, but is the only honest thing to say without re-reading the file.
+    #[serde(default)]
+    pub mvp: bool,
 }
 
 impl MatchPlayer {

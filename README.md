@@ -7,9 +7,19 @@ See the most popular heroes among your opponents!
 ```sh
 make app      # the desktop app from source
 make serve    # the admin console on http://localhost:8731
-make          # the console behind nginx and a certificate
+make          # the console on this machine, published over a Cloudflare tunnel
 make test     # the whole workspace
 ```
+
+## Publishing it
+
+The console runs on a machine of your own, and Cloudflare gives it a name. Nothing listens on a public port, so the machine needs no public address and no certificate.
+
+1. In the Cloudflare dashboard, under Zero Trust > Networks > Tunnels, create a tunnel and copy its token.
+2. Give the tunnel a public hostname, say `draft.example.com`, and point it at the service `http://app:8731`.
+3. Put the token in `.env` as `TUNNEL_TOKEN`, fill in `BASIC_USER` and `BASIC_PASS`, and run `make`.
+
+The app asks for the login itself, so it stays behind a password wherever it is reached from. `make serve` sets neither variable and therefore asks for nothing, which is what you want on localhost.
 
 ## How it works
 

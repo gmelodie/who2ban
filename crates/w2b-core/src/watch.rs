@@ -68,6 +68,31 @@ fn is_fresh(found: &Stamp) -> bool {
     found.modified.elapsed().map_or(true, |age| age < FRESH)
 }
 
+/// A lobby whose match has already been played out.
+///
+/// The client leaves its battlelobby behind when a game ends, so the file sitting on disk
+/// when this program starts usually describes the last match rather than the next one.
+/// Announced as a live lobby it becomes the draft on show, and, being the file, it outranks
+/// anything the screen reads: the client sits there showing the previous match for the
+/// whole of the next draft.
+///
+/// The replay is written when a match finishes, so a replay newer than the lobby is that
+/// match's own ending, and the lobby is spent.
+fn is_spent(found: &Stamp, cfg: &Config) -> bool {
+    newest_replay(cfg).is_some_and(|replay| replay > found.modified)
+}
+
+fn newest_replay(cfg: &Config) -> Option<SystemTime> {
+    paths::replay_dirs(cfg)
+        .into_iter()
+        .filter_map(|dir| std::fs::read_dir(dir).ok())
+        .flatten()
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| paths::is_replay(&entry.path()))
+        .filter_map(|entry| entry.metadata().ok()?.modified().ok())
+        .max()
+}
+
 /// The lobby of whichever prefix wrote one last. An empty file is a created one, not a game.
 fn newest_lobby(paths: &[PathBuf]) -> Option<Stamp> {
     paths
@@ -149,6 +174,16 @@ fn start_lobby_poll(cfg: &Config, tx: Sender<WatchEvent>, stop: Arc<AtomicBool>)
                 continue;
             };
             if last.as_ref() == Some(&found) {
+                continue;
+            }
+            // Checked only when the file changes, which is once a match: it walks the
+            // replay folders, and the poll comes round every 400ms.
+            if is_spent(&found, &cfg) {
+                tracing::info!(
+                    file = %found.path.display(),
+                    "lobby left over from a match already played"
+                );
+                last = Some(found);
                 continue;
             }
             if !ingest::wait_until_stable(&found.path, SETTLE) {
