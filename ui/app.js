@@ -30,13 +30,15 @@ function winrate(h) {
 
 function heroTable(rows) {
   const table = document.createElement("table");
-  table.innerHTML = "<thead><tr><th>hero</th><th>games</th><th>won</th><th>win</th></tr></thead>";
+  table.innerHTML =
+    "<thead><tr><th>hero</th><th>games</th><th>won</th><th>win</th><th>\u{1F44D}</th><th>\u{1F44E}</th></tr></thead>";
   const body = document.createElement("tbody");
   for (const h of rows) {
     const rate = h.games >= state.minGames ? `${Math.round(winrate(h) * 100)}%` : "-";
     const tr = document.createElement("tr");
     tr.innerHTML = `<td class="hero">${escape(h.hero)}</td>
-      <td class="num">${h.games}</td><td class="num">${h.wins}</td><td class="num">${rate}</td>`;
+      <td class="num">${h.games}</td><td class="num">${h.wins}</td><td class="num">${rate}</td>
+      <td class="num">${h.up ?? 0}</td><td class="num">${h.down ?? 0}</td>`;
     body.append(tr);
   }
   table.append(body);

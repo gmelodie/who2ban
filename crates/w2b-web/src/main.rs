@@ -75,6 +75,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/note/{battletag}", get(routes::get_note))
         .route("/api/note", axum::routing::put(routes::put_note))
         .route(
+            "/api/hero-verdict",
+            axum::routing::put(routes::put_hero_verdict),
+        )
+        .route(
             "/api/glyphs",
             get(routes::get_glyphs)
                 .post(routes::post_glyphs)

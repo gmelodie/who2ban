@@ -66,6 +66,15 @@ struct Correction {
     battletag: String,
 }
 
+/// A thumb given, or taken back, on one hero of a card. Sent at once: unlike a note there
+/// is nothing half finished about a click.
+struct Rating {
+    battletag: String,
+    hero: String,
+    verdict: i8,
+    take_back: bool,
+}
+
 struct App {
     settings: Settings,
     login: Option<Login>,
@@ -472,15 +481,17 @@ impl eframe::App for App {
         let draft = self.draft.take();
         let mut edits: Vec<Edit> = Vec::new();
         let mut fixes: Vec<Correction> = Vec::new();
+        let mut ratings: Vec<Rating> = Vec::new();
         egui::CentralPanel::default()
             .frame(theme::central(ui.style()))
             .show(ui, |ui| match &draft {
-                Some(shown) => self.draw_draft(ui, shown, &mut edits, &mut fixes),
+                Some(shown) => self.draw_draft(ui, shown, &mut edits, &mut fixes, &mut ratings),
                 None => self.draw_searching(ui),
             });
         self.draft = draft;
         self.apply(edits);
         self.put_right(fixes);
+        self.rate(ratings);
     }
 }
 
@@ -520,6 +531,38 @@ impl App {
                 worker.send(worker::Command::SaveNote {
                     battletag: edit.battletag,
                     note: edit.note,
+                });
+            }
+        }
+    }
+
+    /// Counted on the card straight away, so a click shows, and sent on to the store.
+    fn rate(&mut self, ratings: Vec<Rating>) {
+        for rating in ratings {
+            if let Some(draft) = &mut self.draft {
+                let rows = draft
+                    .players
+                    .iter_mut()
+                    .filter(|seat| seat.battletag == rating.battletag)
+                    .flat_map(|seat| seat.heroes.iter_mut())
+                    .filter(|row| row.hero == rating.hero);
+                for row in rows {
+                    let count = match rating.verdict {
+                        1 => &mut row.up,
+                        _ => &mut row.down,
+                    };
+                    *count = match rating.take_back {
+                        true => count.saturating_sub(1),
+                        false => *count + 1,
+                    };
+                }
+            }
+            if let Some(worker) = &self.worker {
+                worker.send(worker::Command::RateHero {
+                    battletag: rating.battletag,
+                    hero: rating.hero,
+                    verdict: rating.verdict,
+                    take_back: rating.take_back,
                 });
             }
         }
@@ -673,6 +716,7 @@ impl App {
         draft: &Draft,
         edits: &mut Vec<Edit>,
         fixes: &mut Vec<Correction>,
+        ratings: &mut Vec<Rating>,
     ) {
         if draft.my_team.is_none() {
             ui.label(
@@ -693,7 +737,7 @@ impl App {
             match draft.my_team {
                 None => {
                     let all: Vec<&DraftPlayer> = draft.players.iter().collect();
-                    self.draw_group(ui, None, theme::Side::Unknown, &all, edits, fixes);
+                    self.draw_group(ui, None, theme::Side::Unknown, &all, edits, fixes, ratings);
                 }
                 Some(_) => {
                     let enemies: Vec<&DraftPlayer> = draft.enemies().collect();
@@ -705,6 +749,7 @@ impl App {
                         &enemies,
                         edits,
                         fixes,
+                        ratings,
                     );
                     ui.add_space(14.0);
                     self.draw_group(
@@ -714,12 +759,14 @@ impl App {
                         &allies,
                         edits,
                         fixes,
+                        ratings,
                     );
                 }
             }
         });
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn draw_group(
         &self,
         ui: &mut egui::Ui,
@@ -728,6 +775,7 @@ impl App {
         shown: &[&DraftPlayer],
         edits: &mut Vec<Edit>,
         fixes: &mut Vec<Correction>,
+        ratings: &mut Vec<Rating>,
     ) {
         if shown.is_empty() {
             return;
@@ -759,7 +807,7 @@ impl App {
                     ui.allocate_ui_with_layout(
                         egui::vec2(card, 0.0),
                         egui::Layout::top_down(egui::Align::Min),
-                        |ui| self.draw_player(ui, player, side, edits, fixes),
+                        |ui| self.draw_player(ui, player, side, edits, fixes, ratings),
                     );
                 }
             });
@@ -821,6 +869,7 @@ impl App {
         side: theme::Side,
         edits: &mut Vec<Edit>,
         fixes: &mut Vec<Correction>,
+        ratings: &mut Vec<Rating>,
     ) {
         let name_color = match side {
             theme::Side::Unknown => theme::TEXT,
@@ -911,7 +960,16 @@ impl App {
 
                     let most = heroes.iter().map(|h| h.games).max().unwrap_or(1).max(1);
                     for hero in heroes {
-                        draw_hero(ui, hero, most, self.min_games);
+                        ui.horizontal(|ui| {
+                            // From the right, so the bar takes whatever the thumbs leave.
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    draw_thumbs(ui, player, hero, ratings);
+                                    draw_hero(ui, hero, most, self.min_games);
+                                },
+                            );
+                        });
                     }
                 }
 
@@ -968,6 +1026,41 @@ fn draw_note(ui: &mut egui::Ui, player: &DraftPlayer, edits: &mut Vec<Edit>) {
             },
             save: field.lost_focus(),
         });
+    }
+}
+
+/// The thumbs this player has been given on one hero, as two counters. A click gives one
+/// and a right click takes one back: they add up across matches, so there is no single
+/// verdict to toggle.
+fn draw_thumbs(
+    ui: &mut egui::Ui,
+    player: &DraftPlayer,
+    hero: &w2b_core::HeroRow,
+    ratings: &mut Vec<Rating>,
+) {
+    // Laid out right to left, so the thumbs down goes in first to sit outermost.
+    for (verdict, glyph, color, count) in [
+        (-1i8, DOWN, theme::RED, hero.down),
+        (1, UP, theme::GREEN, hero.up),
+    ] {
+        let text = egui::RichText::new(format!("{glyph}{count}"))
+            .size(12.0)
+            .color(match count {
+                0 => theme::DIM,
+                _ => color,
+            });
+        let response = ui
+            .add(egui::Button::new(text).small().fill(theme::RAISE))
+            .on_hover_text("click to add one, right click to take one back");
+        let take_back = response.secondary_clicked();
+        if response.clicked() || (take_back && count > 0) {
+            ratings.push(Rating {
+                battletag: player.battletag.clone(),
+                hero: hero.hero.clone(),
+                verdict,
+                take_back,
+            });
+        }
     }
 }
 
@@ -1121,6 +1214,7 @@ mod tests {
                 hero: "Raynor".into(),
                 games,
                 wins: games / 2,
+                ..HeroRow::default()
             }],
         }
     }

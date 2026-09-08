@@ -47,7 +47,17 @@ services:
     # On both: `inner` to reach the app, `edge` to dial Cloudflare. This is the only
     # container here that is allowed off the machine.
     networks: [inner, edge]
-    command: tunnel --no-autoupdate run --token ${TUNNEL_TOKEN:?set TUNNEL_TOKEN in .env}
+    # Handed over as an environment variable, which is where cloudflared looks for it
+    # anyway, rather than as `--token` on the command line. A container's processes are
+    # in the host's process list, so `--token` put this in `ps` output, readable by every
+    # account on the machine whether or not it can reach docker at all.
+    #
+    # It is still in `docker inspect` and in `docker compose config`, which exist to print
+    # the configuration and are only open to whoever can reach the daemon. The point is
+    # not that the token is now hidden; it is that reading it takes docker access again.
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN:?set TUNNEL_TOKEN in .env}
+    command: tunnel --no-autoupdate run
 
 networks:
   inner:

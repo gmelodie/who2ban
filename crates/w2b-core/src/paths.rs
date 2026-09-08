@@ -123,6 +123,13 @@ pub fn replay_dirs(cfg: &Config) -> Vec<PathBuf> {
     all.extend(wine_replay_dirs(home.as_deref()));
     all.sort();
     all.dedup();
+    // One folder under two names is still one folder. Wine points `My Documents` at
+    // `Documents`, so every prefix offers each replay folder twice, and a dedup on the
+    // spelling keeps both: the backfill then parses every replay twice, the watcher
+    // raises two events for each finished match, and the app is told twice over that
+    // the draft it is showing has been played. Sorted first, so the plain name wins.
+    let mut seen = std::collections::HashSet::new();
+    all.retain(|dir| seen.insert(dir.canonicalize().unwrap_or_else(|_| dir.clone())));
     all
 }
 

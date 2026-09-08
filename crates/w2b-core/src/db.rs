@@ -56,11 +56,20 @@ CREATE TABLE IF NOT EXISTS player_notes(
     verdict    INTEGER NOT NULL DEFAULT 0,
     updated_at INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS hero_verdicts(
+    battletag  TEXT NOT NULL COLLATE NOCASE,
+    hero       TEXT NOT NULL COLLATE NOCASE,
+    up         INTEGER NOT NULL DEFAULT 0,
+    down       INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY(battletag, hero)
+);
 "#;
 
 /// A database outlives every version of this program, so a step that cannot keep the
 /// rows copies the file aside before it touches anything.
-const SCHEMA_VERSION: i64 = 6;
+const SCHEMA_VERSION: i64 = 7;
 
 /// The shape before 3 held no fingerprint and no player handle, neither of which can be
 /// worked out from what it stored. 4 reshapes in place: it needs only the player rows,
@@ -436,6 +445,58 @@ impl Db {
                 verdict = excluded.verdict,
                 updated_at = excluded.updated_at",
             params![battletag, note.note, note.verdict as i64, now()],
+        )?;
+        Ok(())
+    }
+
+    /// The thumbs a player has been given on each hero, as (up, down) under the hero's
+    /// name in lower case. Heroes nobody has said anything about are absent.
+    pub fn hero_verdicts(
+        &self,
+        battletag: &str,
+    ) -> Result<std::collections::HashMap<String, (u32, u32)>> {
+        let conn = self.lock();
+        let mut q =
+            conn.prepare("SELECT hero, up, down FROM hero_verdicts WHERE battletag = ?1")?;
+        let rows = q.query_map([battletag], |r| {
+            Ok((
+                r.get::<_, String>(0)?.to_lowercase(),
+                (r.get::<_, i64>(1)? as u32, r.get::<_, i64>(2)? as u32),
+            ))
+        })?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    /// One more thumb for a player on a hero, or with `take_back` one fewer. Counted rather
+    /// than held: the same player can be good on one match and bad on the next, and the
+    /// tally is what says which they usually are. Neither count goes below nought, and a
+    /// hero left with none either way is not stored.
+    pub fn rate_hero(
+        &self,
+        battletag: &str,
+        hero: &str,
+        verdict: i8,
+        take_back: bool,
+    ) -> Result<()> {
+        let (up, down): (i64, i64) = match verdict {
+            1 => (1, 0),
+            -1 => (0, 1),
+            other => return Err(Error::Other(format!("a verdict is 1 or -1, not {other}"))),
+        };
+        let step = if take_back { -1 } else { 1 };
+        let conn = self.lock();
+        conn.execute(
+            "INSERT INTO hero_verdicts(battletag, hero, up, down, updated_at)
+             VALUES(?1, ?2, max(?3, 0), max(?4, 0), ?5)
+             ON CONFLICT(battletag, hero) DO UPDATE SET
+                up = max(up + ?3, 0),
+                down = max(down + ?4, 0),
+                updated_at = excluded.updated_at",
+            params![battletag, hero, up * step, down * step, now()],
+        )?;
+        conn.execute(
+            "DELETE FROM hero_verdicts WHERE battletag = ?1 AND hero = ?2 AND up = 0 AND down = 0",
+            params![battletag, hero],
         )?;
         Ok(())
     }

@@ -126,11 +126,14 @@ pub struct Found {
     pub battletag: String,
     /// Share of the name that had to be changed, so nought is a perfect read.
     pub score: f32,
-    /// How much worse the next candidate was. Meaningless when `alone`.
+    /// How much worse the nearest candidate by another name was. Meaningless when `alone`.
     pub margin: f32,
-    /// Whether the pool held nobody else this read could even have been about. Then
+    /// Whether the pool held no other name this read could even have been about. Then
     /// there was no competition to win, and `margin` says only that.
     pub alone: bool,
+    /// How many players in the pool go by the winning name. More than one and the read
+    /// has done all it can: the letters say who, and nothing on the banner says which.
+    pub shared: usize,
 }
 
 /// The one player this read can only have meant. `None` when the read is too poor to
@@ -142,6 +145,14 @@ pub fn identify(reading: &str, pool: &[(String, String)]) -> Option<Found> {
     }
     let scored = rank(reading, pool)?;
     let found = scored.0;
+    // The letters are certain and the person is not: several players hold this name, and
+    // no amount of reading the banner can separate them. Refused rather than guessed at,
+    // because the card that would go up is one real player's history shown under another
+    // player's seat. `shared` says so, and the caller can tell the user which name it was
+    // so they can name the seat themselves.
+    if found.shared > 1 {
+        return None;
+    }
     if found.alone {
         return (found.score <= LONE_MAX_SCORE).then_some(found);
     }
@@ -170,22 +181,77 @@ pub fn rank(reading: &str, pool: &[(String, String)]) -> Option<(Found, String)>
     }
     scored.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
 
-    let (score, _, tag) = scored[0];
-    let next = scored.get(1).map_or(f32::MAX, |s| s.0);
+    let (score, name, tag) = scored[0];
+    // The gap that decides is the one to the nearest *other name*, not to the next row.
+    // Names repeat: a pool of four thousand held three `Alexandre`s, and measured against
+    // the row below, a duplicated name scores a margin of nought however cleanly it reads
+    // and is refused every time. That is not a doubtful read - the letters say `Alexandre`
+    // and nothing else - so counting it as one blinded the reader to a name the moment a
+    // second player took it, and the shared pool only ever grows.
+    let shared = scored.iter().filter(|(_, had, _)| *had == name).count();
+    let runner = scored.iter().find(|(_, had, _)| *had != name);
+    let next = runner.map_or(f32::MAX, |s| s.0);
     Some((
         Found {
             battletag: tag.clone(),
             score,
             margin: next - score,
-            alone: scored.len() < 2,
+            alone: runner.is_none(),
+            shared,
         },
-        scored.get(1).map_or(String::new(), |s| s.1.clone()),
+        runner.map_or(String::new(), |s| s.1.clone()),
     ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Three players called `Alexandre` sat in the pool the evening this was written,
+    /// and the one on the screen was the third of them. Measured against the row below,
+    /// the margin was nought and a read scoring 0.056 - as clean as this reader gets -
+    /// was thrown away for being ambiguous. It is not: the letters are certain, and only
+    /// the number after the hash is in doubt.
+    #[test]
+    fn a_duplicated_name_is_read_clearly_and_still_not_placed() {
+        let crowd = vec![
+            ("Alexandre".to_string(), "Alexandre#1350".to_string()),
+            ("Alexandre".to_string(), "Alexandre#14542".to_string()),
+            ("Alexandre".to_string(), "Alexandre#1974".to_string()),
+            ("Alejandro".to_string(), "Alejandro#1111".to_string()),
+        ];
+        let (found, _) = rank("Alex?ndre", &crowd).unwrap();
+        assert_eq!(found.shared, 3, "the pool holds three of them");
+        // The gap is to the nearest *other* name, so it says what it is supposed to say.
+        assert!(found.margin > MIN_MARGIN, "margin {}", found.margin);
+        assert!(found.score < 0.1, "a clean read scored {}", found.score);
+        // Read plainly, and still nobody: the seat stays empty rather than take a guess
+        // between three real players.
+        assert!(identify("Alex?ndre", &crowd).is_none());
+    }
+
+    /// The same name held by one player is placed exactly as it always was. Without
+    /// this, counting duplicates could have been read as a reason to refuse everybody.
+    #[test]
+    fn a_name_only_one_player_holds_is_placed() {
+        let one = pool(&["Alexandre", "Alejandro", "Alessandro"]);
+        let found = identify("Alex?ndre", &one).expect("one Alexandre is placeable");
+        assert_eq!(found.battletag, "Alexandre#1111");
+        assert_eq!(found.shared, 1);
+    }
+
+    /// A crowd of one name must not drown out a different name that reads better. The
+    /// margin is measured across names, so the duplicates rank below and stay there.
+    #[test]
+    fn duplicates_do_not_crowd_out_a_better_answer() {
+        let crowd = vec![
+            ("Alexandre".to_string(), "Alexandre#1350".to_string()),
+            ("Alexandre".to_string(), "Alexandre#1974".to_string()),
+            ("Alejandro".to_string(), "Alejandro#1111".to_string()),
+        ];
+        let found = identify("Alejandro", &crowd).expect("its own name won");
+        assert_eq!(found.battletag, "Alejandro#1111");
+    }
 
     fn pool(names: &[&str]) -> Vec<(String, String)> {
         names

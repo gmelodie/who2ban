@@ -1,10 +1,16 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct HeroRow {
     pub hero: String,
     pub games: u32,
     pub wins: u32,
+    /// Thumbs this player has been given on this hero, by everyone behind the one login.
+    /// Defaulted, so a server from before them still answers.
+    #[serde(default)]
+    pub up: u32,
+    #[serde(default)]
+    pub down: u32,
 }
 
 impl HeroRow {

@@ -55,6 +55,13 @@ pub enum Command {
         battletag: String,
         note: w2b_core::PlayerNote,
     },
+    /// A thumb for a player on one hero, or one taken back.
+    RateHero {
+        battletag: String,
+        hero: String,
+        verdict: i8,
+        take_back: bool,
+    },
     /// A seat the reader got wrong, or never placed, named by the person looking at it.
     Correct { slot: u8, battletag: String },
 }
@@ -230,6 +237,16 @@ fn obey(
                     let _ = tx.send(Report::Failed(format!("note on {battletag}: {e}")));
                 }
             }
+            Command::RateHero {
+                battletag,
+                hero,
+                verdict,
+                take_back,
+            } => {
+                if let Err(e) = store.rate_hero(&battletag, &hero, verdict, take_back) {
+                    let _ = tx.send(Report::Failed(format!("{hero} on {battletag}: {e}")));
+                }
+            }
             Command::Correct { slot, battletag } => {
                 correct(store, cfg, tx, reader, me, seated, pool, slot, battletag);
             }
@@ -345,6 +362,10 @@ fn handle(
                 // The next draft is a different lobby, so what was read for this one must
                 // not be mistaken for it.
                 on_screen.clear();
+                // The file is written as the loading screen comes up, which is the one
+                // moment all ten picks are on the screen together. Nothing reads them yet;
+                // the frames are kept so that the boxes which would can be measured.
+                reader.want_frames();
                 let learned = reader.harvest(&names);
                 if learned > 0 {
                     if let Err(e) = reader.save() {

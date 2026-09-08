@@ -753,6 +753,85 @@ fn clearing_a_note_removes_it() {
     assert_eq!(db.note("Foe#1").unwrap(), PlayerNote::default());
 }
 
+/// A thumb on a hero is counted, not held: each one given adds to the tally, one taken
+/// back comes off it, and neither count goes below nought.
+#[test]
+fn thumbs_on_a_hero_are_counted() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("who2ban.db");
+
+    {
+        let db = Db::open(&path).unwrap();
+        db.rate_hero("Foe#1", "Alarak", 1, false).unwrap();
+        db.rate_hero("Foe#1", "Alarak", 1, false).unwrap();
+        db.rate_hero("Foe#1", "Alarak", -1, false).unwrap();
+        db.rate_hero("Foe#1", "Tyrande", -1, false).unwrap();
+        db.rate_hero("Foe#1", "Tyrande", -1, true).unwrap();
+        db.rate_hero("Foe#1", "Tyrande", -1, true).unwrap();
+        db.rate_hero("Foe#1", "Tyrande", 1, true).unwrap();
+    }
+
+    let db = Db::open(&path).unwrap();
+    let thumbs = db.hero_verdicts("foe#1").unwrap();
+    assert_eq!(thumbs.get("alarak"), Some(&(2, 1)));
+    assert_eq!(
+        thumbs.get("tyrande"),
+        None,
+        "taken back to nothing and not below it"
+    );
+    assert!(db.rate_hero("Foe#1", "Alarak", 0, false).is_err());
+}
+
+/// The thumbs on a hero ride on its row, so a card shows them without asking again.
+#[test]
+fn a_card_carries_the_thumbs_on_each_hero() {
+    let db = Db::open_memory().unwrap();
+    db.record_replay(
+        "1.StormReplay",
+        &replay(GameMode::StormLeague, &[("Foe#1", "Raynor", 1, true)]),
+    )
+    .unwrap();
+    db.rate_hero("foe#1", "raynor", 1, false).unwrap();
+    db.rate_hero("Foe#1", "Raynor", 1, false).unwrap();
+    db.rate_hero("Foe#1", "Raynor", -1, false).unwrap();
+
+    let seat = draft::player_row(&db, &Config::default(), "Foe#1", 0, 1, true).unwrap();
+    assert_eq!(seat.heroes[0].hero, "Raynor");
+    assert_eq!((seat.heroes[0].up, seat.heroes[0].down), (2, 1));
+}
+
+/// A database from before thumbs on heroes gains somewhere to keep them, and loses nothing.
+#[test]
+fn a_version_6_database_takes_thumbs_on_heroes() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("who2ban.db");
+
+    {
+        let db = Db::open(&path).unwrap();
+        db.set_note(
+            "Foe#1",
+            &PlayerNote {
+                note: "kept".to_string(),
+                verdict: 1,
+            },
+        )
+        .unwrap();
+    }
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch("DROP TABLE hero_verdicts; PRAGMA user_version = 6;")
+            .unwrap();
+    }
+
+    let db = Db::open(&path).unwrap();
+    db.rate_hero("Foe#1", "Alarak", 1, false).unwrap();
+    assert_eq!(
+        db.hero_verdicts("Foe#1").unwrap().get("alarak"),
+        Some(&(1, 0))
+    );
+    assert_eq!(db.note("Foe#1").unwrap().note, "kept");
+}
+
 /// A draft carries what is known about each seat, so the window asks the server once.
 #[test]
 fn a_draft_carries_the_notes() {

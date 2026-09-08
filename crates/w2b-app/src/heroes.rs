@@ -118,6 +118,12 @@ pub fn portrait(hero_id: Option<&str>, hero: &str) -> Option<(&'static str, &'st
         .map(|(_, _, stem, bytes)| (*stem, *bytes))
 }
 
+/// Every hero by its English name, which is how the draft screen titles a seat's card
+/// once there is a hero on it.
+pub fn names() -> impl Iterator<Item = &'static str> {
+    PORTRAITS.iter().map(|(_, name, _, _)| *name)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

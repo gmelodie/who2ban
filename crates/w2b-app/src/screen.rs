@@ -19,9 +19,17 @@ const GAME_WINDOW: &str = "Heroes of the Storm";
 /// Shapes the client has not learned for itself yet, cut from one draft by hand.
 const SEED: &str = include_str!("../assets/glyph-seed.json");
 
-/// Fewer banners than this came back legible and there is no draft on the screen, only
-/// scenery that happens to hold some bright pixels. This is a question about the screen,
-/// so it is asked of what was read, never of how many of those names are on record.
+/// Fewer banners than this have been read off the screen and there is no draft on it,
+/// only scenery that happens to hold some bright pixels. This is a question about the
+/// screen, so it is asked of what was read, never of how many of those names are on
+/// record.
+///
+/// Asked of the banners in hand rather than of the ones this one look managed. Per look
+/// it was a quorum three banners had to reach simultaneously, and banners do not become
+/// legible together: they light as their seats fill, so a draft spent its first half
+/// minute one banner short and showed nothing whatever, including the seats it had been
+/// reading cleanly the whole time. The menu badge is what keeps scenery out - it is
+/// checked every look, and finding a menu drops the banners in hand.
 const LEAST_SEATS: usize = 3;
 
 /// A screen-read draft is worth showing as soon as it names one player, because a name
@@ -56,17 +64,32 @@ pub struct Reader {
     /// The last draft seen, waiting to be told what it said, each banner under the slot
     /// it was cut from so a correction aimed at one card reaches the right picture.
     seen: Vec<(u8, Shot)>,
+    /// What each slot's banner last said, under the slot it was cut from, with how
+    /// legible the frame it was read from was.
+    ///
+    /// Held across looks for the same reason `seen` is: a banner that read once has
+    /// named its seat, and the next look finding it dimmed, covered by a portrait or
+    /// simply missed is not that seat emptying. Kept per slot, the first cards appear as
+    /// their banners become legible; dropped every look, nothing appeared at all until
+    /// three banners happened to be legible within the same couple of seconds, which on
+    /// a draft of mostly unknown letters is most of a minute after the screen came up.
+    held: Vec<(u8, geometry::Seat, String, Legibility)>,
     unsaved: bool,
     /// Held open across looks: the display is asked every couple of seconds for as long
     /// as the program runs.
     screen: Option<w2b_shot::Screen>,
     /// Consecutive looks that found the window and copied nothing off it.
     blank_grabs: u32,
+    /// Full frames still owed to `FRAMES_DIR`, counted down a look at a time.
+    wanted_frames: u32,
     /// Banners the last harvest knew the name of and still could not file.
     unfiled: Vec<(Vec<u8>, String)>,
     /// What the reader last reported, so a steady state is said once rather than every
     /// couple of seconds.
     said: Option<&'static str>,
+    /// Names read cleanly off a banner that several players in the pool answer to, said
+    /// once each rather than every couple of seconds for the whole draft.
+    shared_said: std::collections::HashSet<String>,
     /// Whether the last look found the client sitting on one of its own menus. A look
     /// gives nothing for several reasons and only this one means the match is over.
     menu: bool,
@@ -107,6 +130,30 @@ fn as_png(shot: &Shot) -> Option<Vec<u8>> {
         .map(|()| png.into_inner())
 }
 
+/// Whether an environment variable spelled a switch means off. Shared by the two things
+/// here that write pictures to disk, so they are turned off the same way.
+fn off(v: &str) -> bool {
+    matches!(
+        v.to_ascii_lowercase().as_str(),
+        "" | "0" | "no" | "off" | "false"
+    )
+}
+
+/// Where full frames of the loading screen are kept, and how many.
+///
+/// The picks are shown together on the loading screen and nowhere else this program can
+/// reach: the battlelobby names the ten players and says nothing about what any of them
+/// chose. Whole frames rather than crops, because what these are for is measuring where
+/// on the screen the portraits sit, and a crop taken by boxes that have not been worked
+/// out yet cannot show that. They are large, so few are kept.
+const FRAMES_DIR: &str = "frames";
+const MOST_FRAMES: usize = 6;
+
+/// Frames to keep when a battlelobby arrives. The file is written as the loading screen
+/// comes up, and one grab at that instant can still catch the draft sliding off; spread
+/// over a few looks, one of them lands on the screen wanted.
+const FRAMES_PER_LOBBY: u32 = 3;
+
 /// Unfiled banners kept on disk, which is a few drafts' worth. They are only worth
 /// having while the reader is being fixed, and the newest are the ones that say what it
 /// is doing now, so the oldest go when the folder gets past this.
@@ -144,6 +191,21 @@ fn candidates(tags: &[String]) -> Vec<(String, String)> {
             (name.to_string(), tag.clone())
         })
         .collect()
+}
+
+/// Whether a read is at least as much a hero's name as it is the player it placed.
+///
+/// Once a seat has a hero on it the card is retitled: the hero's name goes on top in
+/// capitals, the battletag drops to a small line beneath, and the banner box holds both.
+/// The big line is the one that reads, and a pool of thousands holds players called
+/// Alarak, Cassia and Murky, so a seat on Alarak was handed `Alarak#11471`'s card. A tie
+/// goes to the hero: a player who really is called that cannot be told from the title by
+/// its letters, and a blank seat is better than a stranger's card.
+fn names_a_hero(reading: &str, score: f32) -> bool {
+    let heroes: Vec<(String, String)> = crate::heroes::names()
+        .map(|hero| (hero.to_string(), hero.to_string()))
+        .collect();
+    name::rank(reading, &heroes).is_some_and(|(hero, _)| hero.score <= score)
 }
 
 /// How the banners that could be read line up with the slots the battlelobby gave them:
@@ -225,11 +287,14 @@ impl Reader {
             aliases: Aliases::load(&dir.join("aliases.json")),
             path,
             seen: Vec::new(),
+            held: Vec::new(),
             unsaved: false,
             screen: w2b_shot::screens().ok().and_then(|s| s.into_iter().next()),
             blank_grabs: 0,
+            wanted_frames: 0,
             unfiled: Vec::new(),
             said: None,
+            shared_said: std::collections::HashSet::new(),
             menu: false,
         }
     }
@@ -241,6 +306,38 @@ impl Reader {
         if self.said != Some(what) {
             self.said = Some(what);
             tracing::info!(state = what, "draft reader");
+        }
+    }
+
+    /// Why a seat that read perfectly well is still empty.
+    ///
+    /// A blank card usually means the banner could not be read, or that it named nobody
+    /// on record, and neither is worth a word. This is the third case, and the only one
+    /// the person watching can do anything about: the letters were certain and several
+    /// players answer to them, so the reader cannot say which and they can. Said once per
+    /// name per draft, because the look comes round every couple of seconds.
+    fn blame(&mut self, reading: &str, candidates: &[(String, String)]) {
+        let Some((found, _)) = name::rank(reading, candidates) else {
+            return;
+        };
+        if found.shared < 2
+            || !name::legible(reading)
+            || found.score > name::MAX_SCORE
+            || names_a_hero(reading, found.score)
+        {
+            return;
+        }
+        let name = found
+            .battletag
+            .split_once('#')
+            .map_or(found.battletag.as_str(), |(n, _)| n)
+            .to_string();
+        if self.shared_said.insert(name.clone()) {
+            tracing::info!(
+                %name,
+                players = found.shared,
+                "read this banner, but several players go by that name: name the seat to settle it"
+            );
         }
     }
 
@@ -334,6 +431,13 @@ impl Reader {
     /// letter it never was.
     pub fn forget(&mut self) {
         self.seen.clear();
+        // Held reads outlive a look on purpose, but not the draft they were read from:
+        // kept into the next one they would seat last game's players off no evidence at
+        // all, which is the failure the whole of `look` is otherwise built to avoid.
+        self.held.clear();
+        // The next draft is a different ten players, and a name that was crowded in this
+        // one is worth saying again when it turns up in that one.
+        self.shared_said.clear();
     }
 
     /// Banners the last harvest could not file, as PNGs, with what they turned out to
@@ -386,6 +490,10 @@ impl Reader {
             self.say("no game window");
             return None;
         };
+        // Before the menu check, not after it: a loading screen is not a draft and may
+        // well answer yes to the badge, and the loading screen is the one thing these
+        // frames are wanted for.
+        self.keep_frame(&rect);
         // One small grab, before the ten, to find out whether there is a draft to read at
         // all. Without it a menu's scenery reads as three seats and gets published as a
         // lobby the user is nowhere near.
@@ -433,7 +541,7 @@ impl Reader {
                 },
             ));
             if let Some(reading) = read {
-                reads.push((seat, reading.text));
+                reads.push((seat, reading.text, legibility));
             }
         }
 
@@ -452,13 +560,37 @@ impl Reader {
         }
         self.blank_grabs = 0;
 
-        if reads.len() < LEAST_SEATS {
+        self.keep_read(reads);
+        if self.held.len() < LEAST_SEATS {
             self.say("no draft on the screen");
             return None;
         }
         self.say("reading a draft");
         self.keep_clearest(shots);
-        Some(reads)
+        Some(
+            self.held
+                .iter()
+                .map(|(_, seat, text, _)| (*seat, text.clone()))
+                .collect(),
+        )
+    }
+
+    /// Fold this look's readings into the ones in hand, keeping each slot's clearest.
+    ///
+    /// The counterpart of `keep_clearest`, which does this for the pictures. A seat only
+    /// changes its mind for a frame that read it better than the one it is standing on,
+    /// so a banner going murky as its pick locks in cannot talk the seat out of the name
+    /// it already gave, and a misread off a dimmer frame cannot overwrite a clean one.
+    fn keep_read(&mut self, reads: Vec<(geometry::Seat, String, Legibility)>) {
+        for (seat, text, legibility) in reads {
+            let slot = slot_of(&seat);
+            match self.held.iter_mut().find(|(at, ..)| *at == slot) {
+                Some((_, _, _, held)) if *held >= legibility => {}
+                Some(held) => *held = (slot, seat, text, legibility),
+                None => self.held.push((slot, seat, text, legibility)),
+            }
+        }
+        self.held.sort_by_key(|(slot, ..)| *slot);
     }
 
     /// Fold this look's banners into the ones in hand, keeping each slot's clearest frame.
@@ -487,14 +619,18 @@ impl Reader {
     /// database already knows. A seat that cannot be placed is left out rather than
     /// filled with a guess, so a half-read draft shows half a draft: an invented
     /// battletag would take notes and verdicts against a player who does not exist.
-    pub fn lobby(&self, reads: &[(geometry::Seat, String)], pool: &[String]) -> Option<Lobby> {
+    pub fn lobby(&mut self, reads: &[(geometry::Seat, String)], pool: &[String]) -> Option<Lobby> {
         let candidates = self.candidates(pool);
 
         let mut players = Vec::new();
         for (seat, text) in reads {
             let Some(found) = name::identify(text, &candidates) else {
+                self.blame(text, &candidates);
                 continue;
             };
+            if names_a_hero(text, found.score) {
+                continue;
+            }
             // The same player cannot hold two seats; a repeat means one read is wrong.
             if players
                 .iter()
@@ -592,29 +728,28 @@ impl Reader {
             //
             // Only when the file named this seat. A banner filed under what it read as
             // has nothing to say about anybody's real name.
-            if from_file {
-                if let Some(drawn) = self
+            if from_file
+                && let Some(drawn) = self
                     .clean_read(shot)
                     .filter(|d| !d.eq_ignore_ascii_case(name))
-                {
-                    if self.aliases.record(&drawn, &battletag) {
-                        tracing::info!(
-                            slot,
-                            %drawn,
-                            %battletag,
-                            "the draft screen calls this player by another name"
-                        );
-                        if let Err(e) = self.aliases.save() {
-                            tracing::warn!(error = %e, "the name would not be saved");
-                        }
+            {
+                if self.aliases.record(&drawn, &battletag) {
+                    tracing::info!(
+                        slot,
+                        %drawn,
+                        %battletag,
+                        "the draft screen calls this player by another name"
+                    );
+                    if let Err(e) = self.aliases.save() {
+                        tracing::warn!(error = %e, "the name would not be saved");
                     }
-                    // Filed under the letters actually drawn, which is the spelling the
-                    // shapes are of. Now that the seat has a name the reader can reach,
-                    // it will be read off the screen next draft rather than sat empty.
-                    if w2b_glyph::learn(&shot.rgb, shot.w, shot.h, &drawn, &mut self.atlas) {
-                        learned += 1;
-                        continue;
-                    }
+                }
+                // Filed under the letters actually drawn, which is the spelling the
+                // shapes are of. Now that the seat has a name the reader can reach,
+                // it will be read off the screen next draft rather than sat empty.
+                if w2b_glyph::learn(&shot.rgb, shot.w, shot.h, &drawn, &mut self.atlas) {
+                    learned += 1;
+                    continue;
                 }
             }
             // Known to be this player and still unfiled, which is the case that keeps the
@@ -662,13 +797,7 @@ impl Reader {
     /// not be filed are kept, so the folder shrinks as the reader gets better at its job
     /// and empties altogether when it is right, and `MOST_KEPT` holds the broken case.
     fn keep_picture(&self, slot: u8, name: &str, shot: &Shot) {
-        let off = |v: String| {
-            matches!(
-                v.to_ascii_lowercase().as_str(),
-                "" | "0" | "no" | "off" | "false"
-            )
-        };
-        if std::env::var("W2B_KEEP_BANNERS").is_ok_and(off) {
+        if std::env::var("W2B_KEEP_BANNERS").is_ok_and(|v| off(&v)) {
             return;
         }
         let Some(dir) = self.path.parent().map(|d| d.join("unfiled")) else {
@@ -695,12 +824,78 @@ impl Reader {
         prune(&dir, MOST_KEPT);
     }
 
+    /// Ask for a run of full frames, one per look, starting with the next one.
+    pub fn want_frames(&mut self) {
+        self.wanted_frames = self.wanted_frames.max(FRAMES_PER_LOBBY);
+    }
+
+    /// Keep one whole frame of the game window, if any are still owed.
+    ///
+    /// Nobody is going to catch a loading screen with a screenshot key: it is up for half
+    /// a minute in the middle of a match, and the person it would be asked of is the one
+    /// playing it. So the program collects its own, the way `keep` collects banners, and
+    /// for the same reason: the boxes this file is full of were measured off a capture,
+    /// and the next set has to be measured off one too.
+    ///
+    /// `W2B_KEEP_FRAMES=0` turns it off. A frame is several megabytes where a banner is a
+    /// few dozen kilobytes, so `MOST_FRAMES` is small and the folder is tidied after each.
+    fn keep_frame(&mut self, rect: &w2b_shot::Rect) {
+        if self.wanted_frames == 0 || std::env::var("W2B_KEEP_FRAMES").is_ok_and(|v| off(&v)) {
+            return;
+        }
+        // Counted down whether or not this one works out. A window that will not copy
+        // will not copy on the next look either, and a run that never ends is a frame
+        // written every couple of seconds for the rest of the match.
+        self.wanted_frames -= 1;
+        let Some(screen) = self.screen.as_ref() else {
+            return;
+        };
+        let Some((sx, sy)) = on_screen(rect, 0, 0) else {
+            return;
+        };
+        let Ok(cut) = screen.grab_region(sx, sy, rect.w, rect.h) else {
+            return;
+        };
+        // The same dropped-frame guard the banners get. A flat grab measures nothing.
+        if !cut.looks_drawn() {
+            return;
+        }
+        let Some(dir) = self.path.parent().map(|d| d.join(FRAMES_DIR)) else {
+            return;
+        };
+        if std::fs::create_dir_all(&dir).is_err() {
+            return;
+        }
+        let shot = Shot {
+            rgb: cut.rgb,
+            w: cut.w,
+            h: cut.h,
+            legibility: (0, 0),
+        };
+        let Some(png) = as_png(&shot) else { return };
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        // The size is in the name because it is the first thing anyone measuring off one
+        // of these needs to know, and it is what tells two monitors' frames apart.
+        let at = dir.join(format!("{stamp}-{}x{}.png", shot.w, shot.h));
+        match std::fs::write(&at, png) {
+            Ok(()) => tracing::info!(path = %at.display(), "frame kept"),
+            Err(e) => return tracing::warn!(error = %e, "frame would not be kept"),
+        }
+        prune(&dir, MOST_FRAMES);
+    }
+
     /// Who a banner reads as, or `None` when this atlas can make no name of it. Only
     /// `harvest` asks, and only to check the file's slots against the screen's.
     fn read_name(&self, shot: &Shot, candidates: &[(String, String)]) -> Option<String> {
         let ladder = w2b_glyph::read_ladder(&shot.rgb, shot.w, shot.h, &self.atlas);
         let reading = best_read(ladder, candidates)?;
-        name::identify(&reading.text, candidates).map(|found| found.battletag)
+        // A hero's name here would count as a clash with the file's slots, and one clash
+        // files the whole lobby under what the banners read as.
+        name::identify(&reading.text, candidates)
+            .filter(|found| !names_a_hero(&reading.text, found.score))
+            .map(|found| found.battletag)
     }
 
     /// Written only when there is something new in it.
@@ -756,6 +951,65 @@ mod tests {
         let mut r = Reader::open(Path::new("/nonexistent"));
         r.seen.clear();
         r
+    }
+
+    /// Both switches are read the same way, and the way to get one wrong is to have it
+    /// mean off when it was set to turn something on.
+    #[test]
+    fn only_a_switch_spelled_off_means_off() {
+        for spelling in ["0", "no", "off", "false", "OFF", "False", ""] {
+            assert!(off(spelling), "{spelling:?}");
+        }
+        for spelling in ["1", "yes", "on", "true", "please"] {
+            assert!(!off(spelling), "{spelling:?}");
+        }
+    }
+
+    /// The seats a draft is shown by arrive one at a time, because banners light as their
+    /// seats fill. A seat read on the look that could only reach two banners has to still
+    /// be there on the look that reaches three, or the draft shows nothing until three
+    /// banners happen to be legible at once.
+    #[test]
+    fn a_seat_read_once_survives_a_look_that_misses_it() {
+        let mut r = reader();
+        r.keep_read(vec![(seat(false, 0), "geemelodie".into(), (10, 10))]);
+        r.keep_read(vec![(seat(false, 1), "SageLion".into(), (8, 8))]);
+        r.keep_read(vec![(seat(false, 2), "Caive".into(), (5, 5))]);
+        assert_eq!(r.held.len(), 3);
+        // The one read three looks ago is still standing, under the slot it was cut from.
+        assert_eq!(r.held[0].0, 0);
+        assert_eq!(r.held[0].2, "geemelodie");
+    }
+
+    /// A banner goes murky as its pick locks in, and a murky frame is where a misread
+    /// comes from. The seat keeps the name it was given by the frame that read it best.
+    #[test]
+    fn a_dimmer_reading_does_not_displace_a_clearer_one() {
+        let mut r = reader();
+        r.keep_read(vec![(seat(true, 2), "SageLion".into(), (8, 8))]);
+        r.keep_read(vec![(seat(true, 2), "Sagel_on".into(), (2, 8))]);
+        assert_eq!(r.held.len(), 1);
+        assert_eq!(r.held[0].2, "SageLion");
+    }
+
+    /// And a clearer reading does displace a dimmer one, so a seat misread while it was
+    /// dark is corrected by the frame that finally shows it lit.
+    #[test]
+    fn a_clearer_reading_displaces_a_dimmer_one() {
+        let mut r = reader();
+        r.keep_read(vec![(seat(true, 2), "Sagel_on".into(), (2, 8))]);
+        r.keep_read(vec![(seat(true, 2), "SageLion".into(), (8, 8))]);
+        assert_eq!(r.held[0].2, "SageLion");
+    }
+
+    /// The reads belong to the draft they were read from. Carried into the next one they
+    /// would seat last game's players off no evidence at all.
+    #[test]
+    fn forgetting_a_draft_drops_its_readings() {
+        let mut r = reader();
+        r.keep_read(vec![(seat(false, 0), "geemelodie".into(), (10, 10))]);
+        r.forget();
+        assert!(r.held.is_empty());
     }
 
     /// The banners a draft is named by are the ones the battlelobby gets, and the
@@ -944,5 +1198,22 @@ mod tests {
         ];
         let lobby = reader().lobby(&reads, &pool()).unwrap();
         assert_eq!(lobby.players.len(), 3);
+    }
+
+    /// A seat on Alarak has a card titled ALARAK, and the pool holds a player of that
+    /// name. The draft this was written after gave that seat to him.
+    #[test]
+    fn a_hero_titling_a_card_takes_no_players_seat() {
+        let mut tags = pool();
+        tags.push("Alarak#11471".to_string());
+        let reads = vec![
+            (seat(false, 0), "geemelodie".to_string()),
+            (seat(false, 1), "ALARAK".to_string()),
+        ];
+        let lobby = reader()
+            .lobby(&reads, &tags)
+            .expect("geemelodie still stands");
+        let seated: Vec<&str> = lobby.players.iter().map(|p| p.battletag.as_str()).collect();
+        assert_eq!(seated, vec!["geemelodie#1711"]);
     }
 }

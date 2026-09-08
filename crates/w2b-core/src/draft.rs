@@ -55,6 +55,15 @@ pub fn player_row(
     enemy: bool,
 ) -> Result<DraftPlayer> {
     let local = db.local_heroes(battletag, cfg.local_all_modes)?;
+    let games = local.iter().map(|h| h.games).sum();
+    let thumbs = db.hero_verdicts(battletag)?;
+    let mut heroes = hero_rows(local, cfg.max_heroes);
+    for row in &mut heroes {
+        if let Some(&(up, down)) = thumbs.get(&row.hero.to_lowercase()) {
+            row.up = up;
+            row.down = down;
+        }
+    }
 
     Ok(DraftPlayer {
         battletag: battletag.to_string(),
@@ -62,8 +71,8 @@ pub fn player_row(
         team,
         enemy,
         note: db.note(battletag)?,
-        games: local.iter().map(|h| h.games).sum(),
-        heroes: hero_rows(local, cfg.max_heroes),
+        games,
+        heroes,
     })
 }
 
@@ -75,6 +84,7 @@ pub fn hero_rows(local: Vec<LocalHero>, max: usize) -> Vec<HeroRow> {
             hero: h.hero,
             games: h.games,
             wins: h.wins,
+            ..HeroRow::default()
         })
         .collect();
 

@@ -142,6 +142,30 @@ impl Store {
         }
     }
 
+    /// A server from before these answers 404, which is reported like any other failure.
+    pub fn rate_hero(
+        &self,
+        battletag: &str,
+        hero: &str,
+        verdict: i8,
+        take_back: bool,
+    ) -> Result<(), String> {
+        match self {
+            Store::Local(db) => db
+                .rate_hero(battletag, hero, verdict, take_back)
+                .map_err(|e| e.to_string()),
+            Store::Server(server) => {
+                let body = serde_json::json!({
+                    "battletag": battletag,
+                    "hero": hero,
+                    "verdict": verdict,
+                    "take_back": take_back,
+                });
+                server.put("/api/hero-verdict", &body)
+            }
+        }
+    }
+
     pub fn count(&self) -> Result<u32, String> {
         match self {
             Store::Local(db) => db.match_count().map_err(|e| e.to_string()),

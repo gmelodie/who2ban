@@ -70,6 +70,34 @@ pub async fn put_note(State(app): State<Arc<App>>, Json(body): Json<NoteBody>) -
     Ok(Json(()))
 }
 
+#[derive(Deserialize)]
+pub struct HeroVerdictBody {
+    pub battletag: String,
+    pub hero: String,
+    /// 1 thumbs up, -1 thumbs down.
+    pub verdict: i8,
+    /// Take one back rather than give one.
+    #[serde(default)]
+    pub take_back: bool,
+}
+
+/// A thumb for a player on one hero. These add up, where a note's verdict is replaced.
+pub async fn put_hero_verdict(
+    State(app): State<Arc<App>>,
+    Json(body): Json<HeroVerdictBody>,
+) -> Reply<()> {
+    tracing::info!(
+        battletag = body.battletag,
+        hero = body.hero,
+        verdict = body.verdict,
+        take_back = body.take_back,
+        "hero verdict"
+    );
+    app.db
+        .rate_hero(&body.battletag, &body.hero, body.verdict, body.take_back)?;
+    Ok(Json(()))
+}
+
 pub async fn get_note(
     State(app): State<Arc<App>>,
     axum::extract::Path(battletag): axum::extract::Path<String>,
