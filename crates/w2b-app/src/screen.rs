@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 
 use w2b_glyph::{Atlas, Reading, geometry, name};
 
+use crate::aliases::Aliases;
 use crate::chrome;
 use w2b_parse::{Lobby, LobbyPlayer};
 
@@ -49,6 +50,9 @@ struct Shot {
 pub struct Reader {
     atlas: Atlas,
     path: PathBuf,
+    /// The names the screen writes instead of battletags, for the Real ID friends whose
+    /// banners say one thing and whose battlelobby entry says another.
+    aliases: Aliases,
     /// The last draft seen, waiting to be told what it said, each banner under the slot
     /// it was cut from so a correction aimed at one card reaches the right picture.
     seen: Vec<(u8, Shot)>,
@@ -218,6 +222,7 @@ impl Reader {
         }
         Reader {
             atlas,
+            aliases: Aliases::load(&dir.join("aliases.json")),
             path,
             seen: Vec::new(),
             unsaved: false,
@@ -253,6 +258,35 @@ impl Reader {
 
     pub fn letters_known(&self) -> usize {
         self.atlas.letters()
+    }
+
+    pub fn aliases_known(&self) -> usize {
+        self.aliases.len()
+    }
+
+    /// Who a read is allowed to conclude a banner is: everyone in the pool by the name
+    /// on their banner, and then the Real ID friends whose banner says something else
+    /// entirely. Only aliases for players who are actually here, so a friend sitting out
+    /// this draft cannot take a seat with a name that half resembles theirs.
+    fn candidates(&self, tags: &[String]) -> Vec<(String, String)> {
+        let mut out = candidates(tags);
+        out.extend(
+            self.aliases
+                .pairs()
+                .filter(|(_, tag)| tags.iter().any(|had| had == tag)),
+        );
+        out
+    }
+
+    /// What the atlas makes of a banner when it can place every single letter. `None`
+    /// when any came out a hole, because a name with a guess in it is not good enough to
+    /// be recorded as what the screen calls somebody.
+    fn clean_read(&self, shot: &Shot) -> Option<String> {
+        w2b_glyph::read_ladder(&shot.rgb, shot.w, shot.h, &self.atlas)
+            .into_iter()
+            .filter(|r| r.unread == 0 && name::legible(&r.text))
+            .max_by_key(|r| r.text.chars().count())
+            .map(|r| r.text)
     }
 
     pub fn atlas(&self) -> &Atlas {
@@ -347,7 +381,7 @@ impl Reader {
             self.say("no screen to read");
             return None;
         }
-        let candidates = candidates(pool);
+        let candidates = self.candidates(pool);
         let Some(rect) = w2b_shot::find_window(GAME_WINDOW).ok().flatten() else {
             self.say("no game window");
             return None;
@@ -453,8 +487,8 @@ impl Reader {
     /// database already knows. A seat that cannot be placed is left out rather than
     /// filled with a guess, so a half-read draft shows half a draft: an invented
     /// battletag would take notes and verdicts against a player who does not exist.
-    pub fn lobby(reads: &[(geometry::Seat, String)], pool: &[String]) -> Option<Lobby> {
-        let candidates = candidates(pool);
+    pub fn lobby(&self, reads: &[(geometry::Seat, String)], pool: &[String]) -> Option<Lobby> {
+        let candidates = self.candidates(pool);
 
         let mut players = Vec::new();
         for (seat, text) in reads {
@@ -499,7 +533,7 @@ impl Reader {
         if self.seen.is_empty() || truth.is_empty() {
             return 0;
         }
-        let candidates = candidates(truth);
+        let candidates = self.candidates(truth);
         // Taken in one pass and never revisited: the banners are gone after this.
         let seen = std::mem::take(&mut self.seen);
 
@@ -529,6 +563,7 @@ impl Reader {
         for ((slot, shot), read) in seen.iter().zip(read) {
             // The file when its slots can be trusted, and otherwise what the banner made
             // of itself. A banner that read as nothing has no second answer.
+            let from_file = by_slot && truth.get(usize::from(*slot)).is_some();
             let named = match by_slot {
                 true => truth.get(usize::from(*slot)).cloned().or(read),
                 false => read,
@@ -546,6 +581,41 @@ impl Reader {
             if w2b_glyph::learn(&shot.rgb, shot.w, shot.h, name, &mut self.atlas) {
                 learned += 1;
                 continue;
+            }
+            // The screen writes a Real ID friend's real name where their battletag would
+            // go, so the letters on this banner are not the letters of the name the file
+            // gives this seat, and nothing can be filed under a name that is not what is
+            // drawn. But if the atlas can already read what *is* drawn, every letter of
+            // it placed, then both names are known at once and the pair is worth keeping.
+            // That is the only moment the two are ever seen together: the battlelobby
+            // knows the battletag and never the real name, the screen the reverse.
+            //
+            // Only when the file named this seat. A banner filed under what it read as
+            // has nothing to say about anybody's real name.
+            if from_file {
+                if let Some(drawn) = self
+                    .clean_read(shot)
+                    .filter(|d| !d.eq_ignore_ascii_case(name))
+                {
+                    if self.aliases.record(&drawn, &battletag) {
+                        tracing::info!(
+                            slot,
+                            %drawn,
+                            %battletag,
+                            "the draft screen calls this player by another name"
+                        );
+                        if let Err(e) = self.aliases.save() {
+                            tracing::warn!(error = %e, "the name would not be saved");
+                        }
+                    }
+                    // Filed under the letters actually drawn, which is the spelling the
+                    // shapes are of. Now that the seat has a name the reader can reach,
+                    // it will be read off the screen next draft rather than sat empty.
+                    if w2b_glyph::learn(&shot.rgb, shot.w, shot.h, &drawn, &mut self.atlas) {
+                        learned += 1;
+                        continue;
+                    }
+                }
             }
             // Known to be this player and still unfiled, which is the case that keeps the
             // atlas at the alphabet it already has: the banners it cannot cut are the
@@ -781,7 +851,9 @@ mod tests {
             (seat(true, 1), "SageLion".to_string()),
             (seat(true, 2), "eumesmo".to_string()),
         ];
-        let lobby = Reader::lobby(&reads, &pool()).expect("three seats is a draft");
+        let lobby = reader()
+            .lobby(&reads, &pool())
+            .expect("three seats is a draft");
         assert_eq!(lobby.players.len(), 3);
         let mine = &lobby.players[0];
         assert_eq!(mine.battletag, "geemelodie#1711");
@@ -801,7 +873,9 @@ mod tests {
             (seat(true, 0), "?????".to_string()),
             (seat(true, 1), "xqzvw".to_string()),
         ];
-        let lobby = Reader::lobby(&reads, &pool()).expect("three good seats stand");
+        let lobby = reader()
+            .lobby(&reads, &pool())
+            .expect("three good seats stand");
         assert_eq!(lobby.players.len(), 3, "a guess was seated");
     }
 
@@ -812,7 +886,9 @@ mod tests {
     #[test]
     fn one_player_on_a_screen_is_still_worth_showing() {
         let reads = vec![(seat(false, 0), "geemelodie".to_string())];
-        let lobby = Reader::lobby(&reads, &pool()).expect("a named seat is worth showing");
+        let lobby = reader()
+            .lobby(&reads, &pool())
+            .expect("a named seat is worth showing");
         assert_eq!(lobby.players.len(), 1);
         assert_eq!(lobby.players[0].battletag, "geemelodie#1711");
     }
@@ -824,7 +900,37 @@ mod tests {
             (seat(true, 0), "xqzvw".to_string()),
             (seat(true, 1), "qqzzqq".to_string()),
         ];
-        assert!(Reader::lobby(&reads, &pool()).is_none());
+        assert!(reader().lobby(&reads, &pool()).is_none());
+    }
+
+    /// A Real ID friend's banner says their real name, so the spelling the pool holds
+    /// for them is nowhere on the screen and the seat can never be placed. Once the
+    /// battlelobby and the banner have been seen together, it reads like any other.
+    #[test]
+    fn a_friend_the_screen_renames_is_still_seated() {
+        let mut r = reader();
+        let reads = vec![(seat(false, 0), "GabrielVargas".to_string())];
+        assert!(
+            r.lobby(&reads, &pool()).is_none(),
+            "seated before the name was known"
+        );
+
+        r.aliases.record("GabrielVargas", "Caive#1258");
+        let lobby = r.lobby(&reads, &pool()).expect("the name places the seat");
+        assert_eq!(lobby.players[0].battletag, "Caive#1258");
+    }
+
+    /// The name of a friend who is not in this draft must not seat them in it. Their
+    /// real name is as much a name as any other and would win its seat outright.
+    #[test]
+    fn a_friend_sitting_this_one_out_takes_no_seat() {
+        let mut r = reader();
+        r.aliases.record("GabrielVargas", "Varguitos#11833");
+        let reads = vec![(seat(false, 0), "GabrielVargas".to_string())];
+        assert!(
+            r.lobby(&reads, &pool()).is_none(),
+            "seated an absent player"
+        );
     }
 
     #[test]
@@ -836,7 +942,7 @@ mod tests {
             (seat(true, 0), "SageLion".to_string()),
             (seat(true, 1), "eumesmo".to_string()),
         ];
-        let lobby = Reader::lobby(&reads, &pool()).unwrap();
+        let lobby = reader().lobby(&reads, &pool()).unwrap();
         assert_eq!(lobby.players.len(), 3);
     }
 }

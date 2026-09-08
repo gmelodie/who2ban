@@ -158,6 +158,7 @@ fn run(settings: Settings, tx: Sender<Report>, orders: Receiver<Command>, stop: 
     tracing::info!(
         screen = watching,
         letters = reader.letters_known(),
+        names = reader.aliases_known(),
         "draft reader"
     );
 
@@ -435,7 +436,7 @@ fn look(
         reader.say("the battlelobby has named this match, so the file stands");
         return;
     }
-    let Some(lobby) = screen::Reader::lobby(&reads, pool) else {
+    let Some(lobby) = reader.lobby(&reads, pool) else {
         // The banners were read and named nobody on record. Worth saying: it is the one
         // failure that looks identical to a working reader with no draft in front of it.
         reader.say("read the draft, seated nobody on record");
