@@ -22,6 +22,19 @@ pub async fn guard(State(wanted): State<String>, request: Request, next: Next) -
         .unwrap_or_default();
 
     if !same(sent, wanted.as_bytes()) {
+        // Said out loud, because a login nobody watches is a login nobody defends. One
+        // shared password on a public hostname is guessable given enough tries, and
+        // until now every one of those tries was silent - there was nothing in the log
+        // to tell a wrong password from a thousand of them.
+        //
+        // Never what was sent: a mistyped password is still a password, and a log is a
+        // file that gets copied around. Only that it happened, and who from.
+        tracing::warn!(
+            from = %asker(&request),
+            path = %request.uri().path(),
+            offered = !sent.is_empty(),
+            "refused"
+        );
         return (
             StatusCode::UNAUTHORIZED,
             [(header::WWW_AUTHENTICATE, "Basic realm=\"who2ban\"")],
@@ -30,6 +43,25 @@ pub async fn guard(State(wanted): State<String>, request: Request, next: Next) -
     }
 
     next.run(request).await
+}
+
+/// Where a request came from, as well as this can be known. Nothing listens on a public
+/// port: the tunnel dials out and every request arrives from it, so the socket's own
+/// address is the tunnel every time and the caller is only ever named in a header.
+/// Headers are the client's to write, so this is for reading a log, never for deciding
+/// anything.
+fn asker(request: &Request) -> String {
+    ["cf-connecting-ip", "x-forwarded-for"]
+        .iter()
+        .find_map(|name| {
+            request
+                .headers()
+                .get(*name)?
+                .to_str()
+                .ok()
+                .map(|v| v.chars().take(64).collect())
+        })
+        .unwrap_or_else(|| "unknown".to_string())
 }
 
 /// Reads every byte whatever the first one says: the time it takes leaks the length only.

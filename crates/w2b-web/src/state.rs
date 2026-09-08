@@ -27,10 +27,16 @@ pub struct App {
     banners_dir: PathBuf,
 }
 
-/// Banners kept on the server. Ten a draft, a few tens of kilobytes each, so this is a
-/// couple of hundred megabytes at the very worst and far less in practice: a banner is
-/// only sent when a client fails to file it, and that stops as the pool learns.
+/// Banners kept on the server. Ten a draft, a few tens of kilobytes each, and only ever
+/// the ones a client failed to file, which stops as the pool learns.
 const MOST_KEPT: usize = 2000;
+
+/// And what they may come to on disk, whatever the count says.
+///
+/// A cap on the number of files is not a cap on the space they take: the size of each
+/// one is chosen by whoever is sending them. Both limits are held, so a store of small
+/// banners is bounded by the count and a store of large ones by the bytes.
+const MOST_KEPT_BYTES: u64 = 256 * 1024 * 1024;
 
 /// One banner on the server's disk.
 #[derive(Debug, Clone, Serialize)]
@@ -88,7 +94,7 @@ impl App {
         let mark = short_hash(png);
         let file = format!("{at}-{safe}-{mark}.png");
         std::fs::write(self.banners_dir.join(&file), png)?;
-        prune(&self.banners_dir, MOST_KEPT);
+        prune(&self.banners_dir, MOST_KEPT, MOST_KEPT_BYTES);
         Ok(file)
     }
 
@@ -208,25 +214,94 @@ fn short_hash(bytes: &[u8]) -> String {
     format!("{h:016x}")
 }
 
-/// Drop the oldest files until only `most` are left. Failures are ignored: tidying is
-/// not a reason to refuse a banner that has already been written.
-fn prune(dir: &Path, most: usize) {
+/// Drop the oldest files until the folder is inside both limits. Failures are ignored:
+/// tidying is not a reason to refuse a banner that has already been written.
+fn prune(dir: &Path, most: usize, most_bytes: u64) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
-    let mut files: Vec<(std::time::SystemTime, PathBuf)> = entries
+    let mut files: Vec<(std::time::SystemTime, u64, PathBuf)> = entries
         .flatten()
         .filter_map(|e| {
             let at = e.path();
-            let when = e.metadata().ok()?.modified().ok()?;
-            at.is_file().then_some((when, at))
+            let meta = e.metadata().ok()?;
+            meta.is_file()
+                .then(|| Some((meta.modified().ok()?, meta.len(), at)))
+                .flatten()
         })
         .collect();
-    if files.len() <= most {
-        return;
+    files.sort_by_key(|(when, _, _)| *when);
+
+    let mut count = files.len();
+    let mut bytes: u64 = files.iter().map(|(_, size, _)| *size).sum();
+    for (_, size, at) in &files {
+        if count <= most && bytes <= most_bytes {
+            return;
+        }
+        if std::fs::remove_file(at).is_ok() {
+            count -= 1;
+            bytes = bytes.saturating_sub(*size);
+        }
     }
-    files.sort_by_key(|(when, _)| *when);
-    for (_, at) in &files[..files.len() - most] {
-        let _ = std::fs::remove_file(at);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("w2b-prune-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch");
+        dir
+    }
+
+    fn write(dir: &Path, name: &str, size: usize) {
+        std::fs::write(dir.join(name), vec![0u8; size]).expect("write");
+        // The oldest goes first, and a whole directory written inside one clock tick
+        // has no oldest at all.
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+
+    fn left(dir: &Path) -> usize {
+        std::fs::read_dir(dir).map(|d| d.count()).unwrap_or(0)
+    }
+
+    #[test]
+    fn the_oldest_go_when_there_are_too_many() {
+        let dir = scratch("count");
+        for i in 0..5 {
+            write(&dir, &format!("{i}.png"), 10);
+        }
+        prune(&dir, 3, u64::MAX);
+        assert_eq!(left(&dir), 3);
+        assert!(dir.join("4.png").exists(), "the newest was dropped");
+        assert!(!dir.join("0.png").exists(), "the oldest was kept");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A count that is inside its limit says nothing about the space taken, which is
+    /// chosen by whoever sent the files.
+    #[test]
+    fn the_oldest_go_when_they_come_to_too_much() {
+        let dir = scratch("bytes");
+        for i in 0..4 {
+            write(&dir, &format!("{i}.png"), 1000);
+        }
+        prune(&dir, 100, 2500);
+        assert_eq!(left(&dir), 2);
+        assert!(dir.join("3.png").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_folder_inside_both_limits_is_left_alone() {
+        let dir = scratch("keep");
+        for i in 0..3 {
+            write(&dir, &format!("{i}.png"), 10);
+        }
+        prune(&dir, 10, u64::MAX);
+        assert_eq!(left(&dir), 3);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

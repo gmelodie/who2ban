@@ -177,6 +177,42 @@ pub struct Learned {
     pub examples: usize,
 }
 
+/// The widest and tallest a banner may be before it is not a banner.
+///
+/// One name cropped off the draft screen is a few hundred pixels each way at 4K and
+/// smaller on every other screen, so this is generous by a factor of several. It exists
+/// because decoding is the one thing a client can ask this server to do that costs real
+/// memory: a PNG of a few kilobytes can declare enormous dimensions, and without a limit
+/// the decoder allocates for what was declared.
+const MOST_BANNER_PIXELS: u32 = 2000;
+
+/// And how much a decode may allocate whatever it declares. The crate's own default is
+/// half a gigabyte, which is fine for a program opening a file its user chose and far
+/// too much for one opening whatever arrives over the internet, several at a time.
+const MOST_BANNER_ALLOC: u64 = 32 * 1024 * 1024;
+
+/// The largest a banner's PNG may be. Checked before anything is decoded or written, so
+/// an oversized one costs a length comparison.
+const MOST_BANNER_BYTES: usize = 2 * 1024 * 1024;
+
+/// Decode one banner, refusing anything that is not the size and shape of a banner.
+fn decode_banner(png: &[u8]) -> Result<image::RgbImage, String> {
+    if png.len() > MOST_BANNER_BYTES {
+        return Err(format!("{} bytes is not a banner", png.len()));
+    }
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(MOST_BANNER_PIXELS);
+    limits.max_image_height = Some(MOST_BANNER_PIXELS);
+    limits.max_alloc = Some(MOST_BANNER_ALLOC);
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(png));
+    reader.set_format(image::ImageFormat::Png);
+    reader.limits(limits);
+    reader
+        .decode()
+        .map(|image| image.to_rgb8())
+        .map_err(|e| e.to_string())
+}
+
 /// One banner as it was on a client's screen, with the name the battlelobby says it
 /// carried. PNG rather than raw pixels: a draft is ten of these and the raw form is
 /// twenty-four megabytes of mostly background.
@@ -216,9 +252,8 @@ pub async fn post_banners(
     let mut gained = 0;
     let mut kept = 0;
     for banner in &banners {
-        let image = match image::load_from_memory_with_format(&banner.png, image::ImageFormat::Png)
-        {
-            Ok(image) => image.to_rgb8(),
+        let image = match decode_banner(&banner.png) {
+            Ok(image) => image,
             // One unreadable picture is not a reason to drop the other nine.
             Err(e) => {
                 tracing::warn!(name = %banner.name, error = %e, "banner would not decode");
