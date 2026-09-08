@@ -19,6 +19,14 @@ The console runs on a machine of your own, and Cloudflare gives it a name. Nothi
 2. Give the tunnel a public hostname, say `draft.example.com`, and point it at the service `http://app:8731`.
 3. Put the token in `.env` as `TUNNEL_TOKEN`, fill in `BASIC_USER` and `BASIC_PASS`, and run `make`.
 
+Reaching the docker socket is a root-equivalent privilege: anyone who can talk to it can start a container that mounts the host filesystem and write to it. Being in the `docker` group is therefore not a smaller permission than root, it is the same one held permanently. To keep the account running this out of that group, ask for it a command at a time:
+
+```sh
+make up DOCKER="sudo docker"
+```
+
+The app itself never wants any of it. The container drops to an unprivileged user, no capabilities, a read-only filesystem and a memory limit, and writes only the one volume.
+
 The app asks for the login itself, so it stays behind a password wherever it is reached from. `make serve` sets neither variable and therefore asks for nothing, which is what you want on localhost.
 
 ## How it works

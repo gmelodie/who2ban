@@ -1,20 +1,30 @@
 .DEFAULT_GOAL := up
 .PHONY: up down logs app-logs serve app test check dist atlas
 
+# How to reach the docker daemon. Talking to its socket is a root-equivalent privilege -
+# anyone holding it can start a container that mounts the host and write to it - so being
+# in the `docker` group is not a smaller permission than root, it is the same one held
+# permanently and unlogged. A machine that would rather ask each time sets:
+#
+#   make up DOCKER="sudo docker"
+#
+# and can then keep the account out of that group entirely.
+DOCKER ?= docker
+
 # The console on your own machine, reached over a Cloudflare tunnel.
 up: .env
 	@chmod 600 .env
-	docker compose up -d --build
+	$(DOCKER) compose up -d --build
 	@echo "https://$$(grep -E '^DOMAIN=' .env | cut -d= -f2)"
 
 down:
-	docker compose down
+	$(DOCKER) compose down
 
 logs:
-	docker compose logs -f --tail 100
+	$(DOCKER) compose logs -f --tail 100
 
 app-logs:
-	docker compose logs -f --tail 100 app
+	$(DOCKER) compose logs -f --tail 100 app
 
 # Holds the login and the tunnel token, which is a key to the hostname itself and not
 # only to this app. Written readable by nobody else, because the default umask on a
