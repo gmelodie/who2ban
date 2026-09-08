@@ -72,7 +72,12 @@ pub fn render_raw(blob: &Blob, angle_degrees: f32) -> Option<(Vec<u8>, f32)> {
     let (ct, st) = (theta.cos(), theta.sin());
 
     // Where the corners land decides how big the upright picture has to be.
-    let corners = [(0.0, 0.0), (w as f32, 0.0), (0.0, h as f32), (w as f32, h as f32)];
+    let corners = [
+        (0.0, 0.0),
+        (w as f32, 0.0),
+        (0.0, h as f32),
+        (w as f32, h as f32),
+    ];
     let (mut lo_x, mut lo_y, mut hi_x, mut hi_y) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
     for (x, y) in corners {
         let (x, y) = (x - w as f32 / 2.0, y - h as f32 / 2.0);
@@ -210,9 +215,9 @@ impl Atlas {
         if slot.len() >= self.per_letter {
             return;
         }
-        let known = slot
-            .iter()
-            .any(|s| distance(&s.cells, &glyph.cells) < 0.02 && (s.height - glyph.height).abs() < 0.08);
+        let known = slot.iter().any(|s| {
+            distance(&s.cells, &glyph.cells) < 0.02 && (s.height - glyph.height).abs() < 0.08
+        });
         if !known {
             slot.push(Shape {
                 cells: glyph.cells.clone(),

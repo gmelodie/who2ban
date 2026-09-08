@@ -118,33 +118,32 @@ fn walk<C: Connection>(
         .map_err(|e| Error::Display(e.to_string()))?;
 
     for child in tree.children {
-        if names_match(conn, child, title, names) {
-            if let Ok(geom) = conn
+        if names_match(conn, child, title, names)
+            && let Ok(geom) = conn
                 .get_geometry(child)
                 .map_err(|e| Error::Display(e.to_string()))?
                 .reply()
-            {
-                // Coordinates are relative to the parent, so ask where that really is.
-                let here = conn
-                    .translate_coordinates(child, window, 0, 0)
-                    .map_err(|e| Error::Display(e.to_string()))?
-                    .reply()
-                    .map(|t| (t.dst_x, t.dst_y))
-                    .unwrap_or((geom.x, geom.y));
-                let found = Rect {
-                    x: here.0,
-                    y: here.1,
-                    w: geom.width,
-                    h: geom.height,
-                };
-                // The game reparents, so several windows carry the name; the drawn one
-                // is the biggest.
-                let bigger = best
-                    .map(|b| u32::from(found.w) * u32::from(found.h) > u32::from(b.w) * u32::from(b.h))
-                    .unwrap_or(true);
-                if bigger && found.w > 200 && found.h > 200 {
-                    *best = Some(found);
-                }
+        {
+            // Coordinates are relative to the parent, so ask where that really is.
+            let here = conn
+                .translate_coordinates(child, window, 0, 0)
+                .map_err(|e| Error::Display(e.to_string()))?
+                .reply()
+                .map(|t| (t.dst_x, t.dst_y))
+                .unwrap_or((geom.x, geom.y));
+            let found = Rect {
+                x: here.0,
+                y: here.1,
+                w: geom.width,
+                h: geom.height,
+            };
+            // The game reparents, so several windows carry the name; the drawn one
+            // is the biggest.
+            let bigger = best
+                .map(|b| u32::from(found.w) * u32::from(found.h) > u32::from(b.w) * u32::from(b.h))
+                .unwrap_or(true);
+            if bigger && found.w > 200 && found.h > 200 {
+                *best = Some(found);
             }
         }
         walk(conn, child, title, names, best)?;
@@ -161,7 +160,10 @@ fn names_match<C: Connection>(conn: &C, window: Window, title: &str, names: &Ato
 fn title_of<C: Connection>(conn: &C, window: Window, names: &Atoms) -> Option<String> {
     for (property, kind) in [
         (names.net_name, names.utf8),
-        (u32::from(x11rb::protocol::xproto::AtomEnum::WM_NAME), u32::from(x11rb::protocol::xproto::AtomEnum::STRING)),
+        (
+            u32::from(x11rb::protocol::xproto::AtomEnum::WM_NAME),
+            u32::from(x11rb::protocol::xproto::AtomEnum::STRING),
+        ),
     ] {
         if property == 0 {
             continue;

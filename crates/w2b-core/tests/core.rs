@@ -30,6 +30,7 @@ fn replay(mode: GameMode, picks: &[(&str, &str, u8, bool)]) -> MatchRecord {
                 team: *team,
                 won: *won,
                 hero_id: Some(hero.to_string()),
+                mvp: false,
             })
             .collect(),
         map: "Cursed Hollow".into(),

@@ -31,6 +31,36 @@ pub const BRIGHTNESS: f32 = 0.75;
 /// which means the draft never has to be caught in the right state.
 pub const BRIGHTNESS_LADDER: [f32; 3] = [BRIGHTNESS, 0.60, 0.45];
 
+/// The rungs `learn` walks, which is a much finer ladder than the one a read uses.
+///
+/// A read can afford to miss the best cutoff, because the next look is two seconds away
+/// and the atlas only has to place enough letters to pick a name out of the pool. Filing
+/// gets one attempt at each banner in the whole draft, and it counts a banner only when
+/// it cuts into exactly as many shapes as the name has letters, so the cutoff has to be
+/// very nearly right. Three rungs leave wide gaps for the one that would have cut a
+/// banner correctly to fall through, and every banner missed is a letter the atlas does
+/// not learn - which is the same letter that made the banner unreadable to begin with.
+///
+/// Measured on one draft of ten banners the client had the true names for: one filed.
+/// The rest were all rejected on their shape count, `Calvino` and `ShadowDragon` among
+/// them, whose reads had already agreed with the slots the battlelobby seated them in.
+///
+/// Nothing here loosens what may be filed. The exact count still decides, so a finer
+/// ladder can only find a cutoff that cuts correctly, never label a shape on a guess.
+///
+/// The three reading rungs come first and the rest afterwards, brightest down. That
+/// ordering is the point of it: a banner the old ladder could file still files at the
+/// same rung and teaches the same shapes, and the new rungs only ever get asked about a
+/// banner that would otherwise have taught nothing at all. Sorting the whole thing by
+/// brightness instead cost accuracy on the synthetic draft, because a letter cut at a
+/// cutoff above `BRIGHTNESS` is an eroded letter, and filing it makes a worse example
+/// than the one the ladder used to keep.
+#[rustfmt::skip]
+pub const LEARN_LADDER: [f32; 12] = [
+    BRIGHTNESS, 0.60, 0.45,
+    0.85, 0.80, 0.70, 0.65, 0.55, 0.50, 0.40, 0.35, 0.30,
+];
+
 /// How far off the line a letter may sit, in pixels, before it is scenery.
 const OFF_LINE: f32 = 9.0;
 
@@ -84,9 +114,16 @@ fn shapes(letters: &[Blob], angle: f32) -> Vec<Option<Glyph>> {
         .map(|b| atlas::render_raw(b, angle))
         .collect();
 
-    let mut heights: Vec<f32> = raw.iter().filter_map(|r| r.as_ref().map(|(_, h)| *h)).collect();
+    let mut heights: Vec<f32> = raw
+        .iter()
+        .filter_map(|r| r.as_ref().map(|(_, h)| *h))
+        .collect();
     heights.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let median = heights.get(heights.len() / 2).copied().unwrap_or(1.0).max(1.0);
+    let median = heights
+        .get(heights.len() / 2)
+        .copied()
+        .unwrap_or(1.0)
+        .max(1.0);
 
     raw.into_iter()
         .map(|r| {
@@ -122,7 +159,12 @@ pub fn read_at(rgb: &[u8], w: usize, h: usize, atlas: &Atlas, threshold: f32) ->
             }
         }
     }
-    Some(Reading { text, unread, angle, threshold })
+    Some(Reading {
+        text,
+        unread,
+        angle,
+        threshold,
+    })
 }
 
 /// Every reading the ladder yields, brightest rung first, skipping the rungs that saw
@@ -146,11 +188,35 @@ pub fn learn(rgb: &[u8], w: usize, h: usize, truth: &str, atlas: &mut Atlas) -> 
     // A rung that cuts the banner into the wrong number of letters files nothing, so the
     // next one is tried rather than the banner being given up on. Reading a dimmed seat
     // and then never learning from it would starve the atlas of half of every draft.
-    BRIGHTNESS_LADDER.iter().any(|&t| learn_at(rgb, w, h, truth, atlas, t))
+    LEARN_LADDER
+        .iter()
+        .any(|&t| learn_at(rgb, w, h, truth, atlas, t))
+}
+
+/// How many shapes each rung of the learning ladder cuts a banner into, for saying why
+/// one could not be filed. The count that matters is the one that equals the number of
+/// letters in the name; a banner where no rung reaches it is a banner the segmenter
+/// cannot cut, and no amount of knowing whose it was will teach the atlas from it.
+pub fn shape_counts(rgb: &[u8], w: usize, h: usize) -> Vec<(f32, usize)> {
+    let mut counts: Vec<(f32, usize)> = LEARN_LADDER
+        .iter()
+        .filter_map(|&t| letters_at(rgb, w, h, t).map(|(blobs, _)| (t, blobs.len())))
+        .collect();
+    // Brightest first, which `LEARN_LADDER` itself is not: it is ordered by what should
+    // be tried first, and this is ordered to be read by a person.
+    counts.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    counts
 }
 
 /// File a banner's shapes at a stated cutoff.
-pub fn learn_at(rgb: &[u8], w: usize, h: usize, truth: &str, atlas: &mut Atlas, threshold: f32) -> bool {
+pub fn learn_at(
+    rgb: &[u8],
+    w: usize,
+    h: usize,
+    truth: &str,
+    atlas: &mut Atlas,
+    threshold: f32,
+) -> bool {
     let Some((letters, angle)) = letters_at(rgb, w, h, threshold) else {
         return false;
     };

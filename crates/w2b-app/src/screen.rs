@@ -29,11 +29,21 @@ const LEAST_SEATS: usize = 3;
 /// is the case the reader exists for.
 const LEAST_PLACED: usize = 1;
 
+/// How legible a banner was in the frame it was cut from: letters the atlas could place,
+/// and failing that the number of shapes it cut into at all.
+///
+/// Only ever compared between frames of the same banner, to keep the better one. The
+/// letters come first because a banner that reads is plainly clearer than one that does
+/// not; the shape count breaks the tie for the banners whose letters this atlas has never
+/// seen, which place nothing in any frame and are the ones worth learning from.
+type Legibility = (usize, usize);
+
 /// A banner as it was on the screen, kept until the battlelobby can name it.
 struct Shot {
     rgb: Vec<u8>,
     w: usize,
     h: usize,
+    legibility: Legibility,
 }
 
 pub struct Reader {
@@ -64,6 +74,12 @@ fn slot_of(seat: &geometry::Seat) -> u8 {
     seat.row + u8::from(seat.right_hand) * 5
 }
 
+/// How much of a banner a reading got hold of, for choosing between frames of it.
+fn legibility_of(reading: &Reading) -> Legibility {
+    let shapes = reading.text.chars().count();
+    (shapes - reading.unread.min(shapes), shapes)
+}
+
 /// Where a banner sits on the desktop, or `None` if that is off the edge of it.
 fn on_screen(rect: &w2b_shot::Rect, x: usize, y: usize) -> Option<(i16, i16)> {
     let sx = i32::from(rect.x) + i32::try_from(x).ok()?;
@@ -85,6 +101,35 @@ fn as_png(shot: &Shot) -> Option<Vec<u8>> {
         .write_to(&mut png, image::ImageFormat::Png)
         .ok()
         .map(|()| png.into_inner())
+}
+
+/// Unfiled banners kept on disk, which is a few drafts' worth. They are only worth
+/// having while the reader is being fixed, and the newest are the ones that say what it
+/// is doing now, so the oldest go when the folder gets past this.
+const MOST_KEPT: usize = 40;
+
+/// Drop the oldest files until only `most` are left. Every failure is ignored: this is
+/// housekeeping for a debugging aid, and a folder that will not tidy itself is not a
+/// reason to stop reading the draft.
+fn prune(dir: &Path, most: usize) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut files: Vec<(std::time::SystemTime, PathBuf)> = entries
+        .flatten()
+        .filter_map(|e| {
+            let at = e.path();
+            let when = e.metadata().ok()?.modified().ok()?;
+            at.is_file().then_some((when, at))
+        })
+        .collect();
+    if files.len() <= most {
+        return;
+    }
+    files.sort_by_key(|(when, _)| *when);
+    for (_, at) in &files[..files.len() - most] {
+        let _ = std::fs::remove_file(at);
+    }
 }
 
 /// Players by the name on their banner, which is the battletag without its number.
@@ -139,7 +184,10 @@ fn best_read(ladder: Vec<Reading>, candidates: &[(String, String)]) -> Option<Re
             }
             Some(_) => {}
             None => {
-                if fallback.as_ref().is_none_or(|had| reading.unread < had.unread) {
+                if fallback
+                    .as_ref()
+                    .is_none_or(|had| reading.unread < had.unread)
+                {
                     fallback = Some(reading);
                 }
             }
@@ -271,8 +319,7 @@ impl Reader {
         let Some(screen) = self.screen.as_ref() else {
             return false;
         };
-        let Some((x, y, w, h)) = chrome::badge_box(usize::from(rect.w), usize::from(rect.h))
-        else {
+        let Some((x, y, w, h)) = chrome::badge_box(usize::from(rect.w), usize::from(rect.h)) else {
             return false;
         };
         let Some((sx, sy)) = on_screen(rect, x, y) else {
@@ -341,12 +388,14 @@ impl Reader {
             // missing, and the battlelobby is about to say what they are. Dropping it
             // here is what held the reader to the letters it already had, because every
             // banner it ever learned from was one it could already read.
+            let legibility = read.as_ref().map_or((0, 0), legibility_of);
             shots.push((
                 slot_of(&seat),
                 Shot {
                     rgb: cut.rgb,
                     w: cut.w,
                     h: cut.h,
+                    legibility,
                 },
             ));
             if let Some(reading) = read {
@@ -374,8 +423,30 @@ impl Reader {
             return None;
         }
         self.say("reading a draft");
-        self.seen = shots;
+        self.keep_clearest(shots);
         Some(reads)
+    }
+
+    /// Fold this look's banners into the ones in hand, keeping each slot's clearest frame.
+    ///
+    /// The battlelobby arrives with the loading screen, and by then the banners are the
+    /// worst they have been all draft: seats dim as their picks lock in, portraits slide
+    /// over them, and the draft is on its way off the screen entirely. Keeping whichever
+    /// frame happened to be last handed the one moment that can name a banner the least
+    /// legible picture of it, and `learn` wants the count of shapes to come out exactly
+    /// right, so a draft with all ten names known at load taught the atlas nothing.
+    ///
+    /// Held per slot rather than per look for the same reason the seats are: a banner
+    /// that read this time and not the next did not empty, it dimmed.
+    fn keep_clearest(&mut self, shots: Vec<(u8, Shot)>) {
+        for (slot, shot) in shots {
+            match self.seen.iter_mut().find(|(at, _)| *at == slot) {
+                Some((_, held)) if held.legibility >= shot.legibility => {}
+                Some((_, held)) => *held = shot,
+                None => self.seen.push((slot, shot)),
+            }
+        }
+        self.seen.sort_by_key(|(slot, _)| *slot);
     }
 
     /// The lobby those reads describe, holding only the seats that named somebody this
@@ -474,10 +545,27 @@ impl Reader {
                 .map_or(battletag.as_str(), |(n, _)| n);
             if w2b_glyph::learn(&shot.rgb, shot.w, shot.h, name, &mut self.atlas) {
                 learned += 1;
-            } else if let Some(png) = as_png(shot) {
-                // Known to be this player, and still unfiled: the shapes did not come to
-                // the same count as the name. Kept as a picture so a fuller atlas than
-                // this one can try.
+                continue;
+            }
+            // Known to be this player and still unfiled, which is the case that keeps the
+            // atlas at the alphabet it already has: the banners it cannot cut are the
+            // banners carrying the letters it cannot read. Say what the rungs made of it,
+            // because the wanted count against the counts on offer is the whole diagnosis
+            // and nothing else in the program ever gets to see it.
+            let cuts: Vec<String> = w2b_glyph::shape_counts(&shot.rgb, shot.w, shot.h)
+                .iter()
+                .map(|(t, n)| format!("{t:.2}:{n}"))
+                .collect();
+            tracing::info!(
+                slot,
+                name,
+                wanted = name.chars().filter(|c| !c.is_whitespace()).count(),
+                cuts = %cuts.join(" "),
+                "banner would not cut into its letters"
+            );
+            self.keep_picture(*slot, name, shot);
+            if let Some(png) = as_png(shot) {
+                // Kept as a picture so a fuller atlas than this one can try.
                 self.unfiled.push((png, name.to_string()));
             }
         }
@@ -485,6 +573,56 @@ impl Reader {
             self.unsaved = true;
         }
         learned
+    }
+
+    /// Write a banner that could not be filed beside the atlas, under the name it is
+    /// known to carry.
+    ///
+    /// On by default, because these are the one thing missing whenever this goes wrong.
+    /// A banner that will not cut up is the only evidence of why, the atlas cannot learn
+    /// the letters on it until that is understood, and the program already builds this
+    /// exact PNG to hand to a server that can do no more with it than the client just
+    /// did. Keeping it costs a write; not keeping it costs the next investigation, which
+    /// is a whole draft's wait for a picture nobody thought to save.
+    ///
+    /// `cargo run -p w2b-glyph --example banners` takes exactly this picture and that
+    /// name and says, rung by rung, what the segmenter made of it.
+    ///
+    /// `W2B_KEEP_BANNERS=0` turns it off. Nothing is unbounded: only banners that could
+    /// not be filed are kept, so the folder shrinks as the reader gets better at its job
+    /// and empties altogether when it is right, and `MOST_KEPT` holds the broken case.
+    fn keep_picture(&self, slot: u8, name: &str, shot: &Shot) {
+        let off = |v: String| {
+            matches!(
+                v.to_ascii_lowercase().as_str(),
+                "" | "0" | "no" | "off" | "false"
+            )
+        };
+        if std::env::var("W2B_KEEP_BANNERS").is_ok_and(off) {
+            return;
+        }
+        let Some(dir) = self.path.parent().map(|d| d.join("unfiled")) else {
+            return;
+        };
+        if std::fs::create_dir_all(&dir).is_err() {
+            return;
+        }
+        let Some(png) = as_png(shot) else { return };
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        // The name is a battletag's first half, so it is whatever a stranger chose to
+        // call themselves; anything that is not plainly a filename is spelled out of it.
+        let safe: String = name
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+            .collect();
+        let at = dir.join(format!("{stamp}-{slot}-{safe}.png"));
+        match std::fs::write(&at, png) {
+            Ok(()) => tracing::info!(path = %at.display(), "banner kept"),
+            Err(e) => return tracing::warn!(error = %e, "banner would not be kept"),
+        }
+        prune(&dir, MOST_KEPT);
     }
 
     /// Who a banner reads as, or `None` when this atlas can make no name of it. Only
@@ -515,10 +653,15 @@ mod tests {
     }
 
     fn pool() -> Vec<String> {
-        ["geemelodie#1711", "SageLion#115872", "eumesmo#1338", "Caive#1258"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect()
+        [
+            "geemelodie#1711",
+            "SageLion#115872",
+            "eumesmo#1338",
+            "Caive#1258",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
     }
 
     fn truth() -> Vec<String> {
@@ -527,6 +670,66 @@ mod tests {
 
     fn reads(names: [Option<&str>; 3]) -> Vec<Option<String>> {
         names.iter().map(|n| n.map(str::to_string)).collect()
+    }
+
+    fn shot(legibility: Legibility) -> Shot {
+        Shot {
+            rgb: vec![0; 3],
+            w: 1,
+            h: 1,
+            legibility,
+        }
+    }
+
+    /// A reader with nothing on disk and no screen, which is all `keep_clearest` needs.
+    fn reader() -> Reader {
+        let mut r = Reader::open(Path::new("/nonexistent"));
+        r.seen.clear();
+        r
+    }
+
+    /// The banners a draft is named by are the ones the battlelobby gets, and the
+    /// battlelobby arrives when the draft is at its dimmest. The clear frame from the
+    /// middle of it has to survive the murky one at the end of it.
+    #[test]
+    fn a_dimmer_frame_does_not_displace_a_clearer_one() {
+        let mut r = reader();
+        r.keep_clearest(vec![(3, shot((6, 6)))]);
+        r.keep_clearest(vec![(3, shot((0, 2)))]);
+        assert_eq!(r.seen.len(), 1);
+        assert_eq!(r.seen[0].1.legibility, (6, 6));
+    }
+
+    /// And a clearer one does displace a murky one, so a banner that only comes good
+    /// halfway through the draft is the one that gets filed.
+    #[test]
+    fn a_clearer_frame_displaces_a_dimmer_one() {
+        let mut r = reader();
+        r.keep_clearest(vec![(3, shot((0, 2)))]);
+        r.keep_clearest(vec![(3, shot((6, 6)))]);
+        assert_eq!(r.seen[0].1.legibility, (6, 6));
+    }
+
+    /// A banner whose letters this atlas has never seen places nothing in any frame, so
+    /// the cutting is all there is to go on: the frame that found six shapes is a better
+    /// picture of a six letter name than the one that found two.
+    #[test]
+    fn unreadable_banners_are_judged_on_what_they_cut_into() {
+        let mut r = reader();
+        r.keep_clearest(vec![(3, shot((0, 2)))]);
+        r.keep_clearest(vec![(3, shot((0, 6)))]);
+        assert_eq!(r.seen[0].1.legibility, (0, 6));
+    }
+
+    /// A look that drops a seat has not emptied it. Every slot the draft ever showed is
+    /// still in hand when the battlelobby turns up to name them.
+    #[test]
+    fn a_seat_missing_from_one_look_is_still_held() {
+        let mut r = reader();
+        r.keep_clearest(vec![(0, shot((4, 4))), (7, shot((5, 5)))]);
+        r.keep_clearest(vec![(0, shot((1, 4)))]);
+        let slots: Vec<u8> = r.seen.iter().map(|(slot, _)| *slot).collect();
+        assert_eq!(slots, vec![0, 7]);
     }
 
     /// Every banner that could be read names the player the file seats in that slot, so

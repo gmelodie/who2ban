@@ -284,7 +284,11 @@ fn an_absorbed_atlas_keeps_everything_both_held() {
     // Absorbing twice must not double the file: the shapes are already recognised.
     let settled = learned.examples();
     learned.absorb(&shipped);
-    assert_eq!(learned.examples(), settled, "the same shapes were filed twice");
+    assert_eq!(
+        learned.examples(),
+        settled,
+        "the same shapes were filed twice"
+    );
 }
 
 /// `Atlas::default` is what a client with no file and a server with no pool both start

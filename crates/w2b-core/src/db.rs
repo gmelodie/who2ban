@@ -168,7 +168,7 @@ fn rebuild_matches(conn: &Connection) -> Result<()> {
     )?;
 
     let rosters = stored_rosters(conn)?;
-    for (id, roster, _) in &rosters {
+    for (id, roster, _, _) in &rosters {
         conn.execute(
             "UPDATE matches SET roster = ?1 WHERE id = ?2",
             params![roster, id],
@@ -178,10 +178,12 @@ fn rebuild_matches(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// Every stored match as `(id, roster, decided)`, read back from the player rows.
-fn stored_rosters(conn: &Connection) -> Result<Vec<(i64, String, bool)>> {
+/// Every stored match as `(id, roster, decided, played_at)`, read back from the player
+/// rows. `played_at` comes along because the only caller groups on it, and asking for it
+/// one match at a time afterwards is a round trip per match for a column already in hand.
+fn stored_rosters(conn: &Connection) -> Result<Vec<(i64, String, bool, i64)>> {
     let mut stmt = conn.prepare(
-        "SELECT m.id, group_concat(seat), max(seats.won), min(seats.won)
+        "SELECT m.id, group_concat(seat), max(seats.won), min(seats.won), m.played_at
          FROM matches m
          JOIN (SELECT match_id, handle || ':' || hero || ':' || team AS seat, won
                FROM match_players ORDER BY match_id, seat) seats ON seats.match_id = m.id
@@ -194,6 +196,7 @@ fn stored_rosters(conn: &Connection) -> Result<Vec<(i64, String, bool)>> {
             r.get::<_, i64>(0)?,
             r.get::<_, Option<String>>(1)?.unwrap_or_default(),
             won_any == 1 && won_all == 0,
+            r.get::<_, i64>(4)?,
         ))
     })?;
     Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
@@ -201,18 +204,14 @@ fn stored_rosters(conn: &Connection) -> Result<Vec<(i64, String, bool)>> {
 
 /// One match per roster per twenty minutes. The row that saw a winner outranks one cut
 /// short by a disconnect, and its replay files move over rather than being forgotten.
-fn fold_duplicates(conn: &Connection, rosters: &[(i64, String, bool)]) -> Result<()> {
+fn fold_duplicates(conn: &Connection, rosters: &[(i64, String, bool, i64)]) -> Result<()> {
     let mut by_roster: std::collections::HashMap<&str, Vec<(i64, bool, i64)>> =
         std::collections::HashMap::new();
-    for (id, roster, decided) in rosters {
-        let played_at: i64 =
-            conn.query_row("SELECT played_at FROM matches WHERE id = ?1", [id], |r| {
-                r.get(0)
-            })?;
+    for (id, roster, decided, played_at) in rosters {
         by_roster
             .entry(roster.as_str())
             .or_default()
-            .push((*id, *decided, played_at));
+            .push((*id, *decided, *played_at));
     }
 
     for group in by_roster.values_mut() {
@@ -493,9 +492,8 @@ impl Db {
     /// several thousand chances to be confidently wrong.
     pub fn battletags(&self) -> Result<Vec<String>> {
         let conn = self.lock();
-        let mut q = conn.prepare(
-            "SELECT DISTINCT battletag FROM match_players WHERE battletag IS NOT NULL",
-        )?;
+        let mut q = conn
+            .prepare("SELECT DISTINCT battletag FROM match_players WHERE battletag IS NOT NULL")?;
         let rows = q.query_map([], |row| row.get::<_, String>(0))?;
         Ok(rows.filter_map(std::result::Result::ok).collect())
     }

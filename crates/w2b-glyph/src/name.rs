@@ -9,6 +9,22 @@
 /// still says which player it was, and it is the margin below that decides.
 pub const MAX_SCORE: f32 = 0.45;
 
+/// What a read has to score when it is the only candidate of its length in the pool.
+///
+/// `MIN_MARGIN` is what makes an answer safe, and it cannot speak for a read that nothing
+/// competed with: a lone candidate is not well distinguished, it is simply the only thing
+/// that was asked. Scoring it as a clear winner is how a player who has never been seen
+/// before takes the card of whoever in the pool their name half resembles, which is the
+/// one wrong answer the reader can give that looks exactly like a right one.
+///
+/// So the score decides alone, at a bar the generous `MAX_SCORE` does not set. A blank
+/// seat is better than a stranger's card, and the seat is blank for a minute at most: the
+/// battlelobby names all ten at load.
+///
+/// Conservative rather than measured. It wants checking against a pool of real size,
+/// where how often a draft holds a name nobody has on record is the number that matters.
+pub const LONE_MAX_SCORE: f32 = 0.20;
+
 /// How far clear of the next candidate the best one has to be.
 ///
 /// This, not the score, is what makes an answer safe. A read that half matches one
@@ -82,7 +98,9 @@ fn cost(a: &str, b: &str, unread: f32) -> f32 {
             } else {
                 1.0
             };
-            cur[j] = (prev[j] + 1.0).min(cur[j - 1] + 1.0).min(prev[j - 1] + swap);
+            cur[j] = (prev[j] + 1.0)
+                .min(cur[j - 1] + 1.0)
+                .min(prev[j - 1] + swap);
         }
         std::mem::swap(&mut prev, &mut cur);
     }
@@ -108,8 +126,11 @@ pub struct Found {
     pub battletag: String,
     /// Share of the name that had to be changed, so nought is a perfect read.
     pub score: f32,
-    /// How much worse the next candidate was.
+    /// How much worse the next candidate was. Meaningless when `alone`.
     pub margin: f32,
+    /// Whether the pool held nobody else this read could even have been about. Then
+    /// there was no competition to win, and `margin` says only that.
+    pub alone: bool,
 }
 
 /// The one player this read can only have meant. `None` when the read is too poor to
@@ -121,6 +142,9 @@ pub fn identify(reading: &str, pool: &[(String, String)]) -> Option<Found> {
     }
     let scored = rank(reading, pool)?;
     let found = scored.0;
+    if found.alone {
+        return (found.score <= LONE_MAX_SCORE).then_some(found);
+    }
     (found.score <= MAX_SCORE && found.margin >= MIN_MARGIN).then_some(found)
 }
 
@@ -153,7 +177,54 @@ pub fn rank(reading: &str, pool: &[(String, String)]) -> Option<(Found, String)>
             battletag: tag.clone(),
             score,
             margin: next - score,
+            alone: scored.len() < 2,
         },
         scored.get(1).map_or(String::new(), |s| s.1.clone()),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pool(names: &[&str]) -> Vec<(String, String)> {
+        names
+            .iter()
+            .map(|n| ((*n).to_string(), format!("{n}#1111")))
+            .collect()
+    }
+
+    /// Read off a real draft banner: the seat held `nkress`, whose `k` this atlas had
+    /// never seen, and `nkress` had never been played against so the pool did not hold
+    /// them either. `Elross` was the only name in the pool of that length, won by
+    /// default, and took the card - the enemy shown was a player who was not in the game.
+    #[test]
+    fn a_stranger_does_not_take_the_one_name_they_half_resemble() {
+        let found = identify("?Lress", &pool(&["Elross", "geemelodie", "MunchCarries"]));
+        assert!(found.is_none(), "named {found:?}");
+    }
+
+    /// The same read with the player it was actually about on record. Two names fit it
+    /// equally badly, so the margin does the work it was written for.
+    #[test]
+    fn two_names_that_fit_alike_name_neither() {
+        assert!(identify("?Lress", &pool(&["Elross", "nkress"])).is_none());
+    }
+
+    /// A lone candidate is not turned away for being lonely. This is `geemelodie` as a
+    /// thin atlas read it off that same draft, two letters short of the whole name.
+    #[test]
+    fn a_lone_candidate_read_well_is_still_placed() {
+        let found = identify("geemel?d?e", &pool(&["geemelodie"]));
+        assert_eq!(
+            found.map(|f| f.battletag).as_deref(),
+            Some("geemelodie#1111")
+        );
+    }
+
+    /// And having no competition is not itself a reason to believe a poor read.
+    #[test]
+    fn a_lone_candidate_read_poorly_is_not() {
+        assert!(identify("?e??el?d?e", &pool(&["geemelodie"])).is_none());
+    }
 }

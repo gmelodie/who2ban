@@ -177,7 +177,11 @@ fn award(event: &Value, wanted: &str, into: &mut [bool]) {
         return;
     };
     for instance in list {
-        if text(instance, "m_name").map(|n| n.trim().to_string()).as_deref() != Some(wanted) {
+        if text(instance, "m_name")
+            .map(|n| n.trim().to_string())
+            .as_deref()
+            != Some(wanted)
+        {
             continue;
         }
         let Some(rows) = instance.get("m_values").and_then(array) else {

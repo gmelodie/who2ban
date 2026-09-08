@@ -36,9 +36,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "config"
     );
     let atlas_path = paths::data_dir().join("glyphs.json");
-    let app = Arc::new(App::new(Db::open(&paths::db_path())?, cfg, atlas_path.clone()));
+    let app = Arc::new(App::new(
+        Db::open(&paths::db_path())?,
+        cfg,
+        atlas_path.clone(),
+    ));
     let (letters, examples) = app.atlas_size();
     tracing::info!(path = %atlas_path.display(), letters, examples, "glyph pool");
+    tracing::info!(
+        path = %app.banners_dir().display(),
+        kept = app.kept_banners().len(),
+        "banners"
+    );
     tracing::info!(
         matches = app.db.match_count().unwrap_or(0),
         failed = app.db.error_count().unwrap_or(0),
@@ -75,6 +84,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "/api/glyphs/banners",
             post(routes::post_banners).layer(axum::extract::DefaultBodyLimit::max(GLYPH_LIMIT)),
         )
+        .route("/api/banners", get(routes::list_banners))
+        .route("/api/banners/{file}", get(routes::get_banner))
         .with_state(app);
 
     let router = match auth::wanted() {

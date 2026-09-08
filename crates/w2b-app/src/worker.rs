@@ -56,10 +56,7 @@ pub enum Command {
         note: w2b_core::PlayerNote,
     },
     /// A seat the reader got wrong, or never placed, named by the person looking at it.
-    Correct {
-        slot: u8,
-        battletag: String,
-    },
+    Correct { slot: u8, battletag: String },
 }
 
 pub struct Worker {
@@ -125,7 +122,11 @@ fn run(settings: Settings, tx: Sender<Report>, orders: Receiver<Command>, stop: 
         if gained > 0 {
             let _ = reader.save();
         }
-        tracing::info!(gained, letters = reader.letters_known(), "glyphs from the server");
+        tracing::info!(
+            gained,
+            letters = reader.letters_known(),
+            "glyphs from the server"
+        );
     }
     // Who the battlelobby last named, and what was last read off the screen. Declared
     // before the backfill because a lobby can form while it runs.
@@ -348,7 +349,11 @@ fn handle(
                     if let Err(e) = reader.save() {
                         let _ = tx.send(Report::Failed(format!("atlas: {e}")));
                     }
-                    tracing::info!(banners = learned, letters = reader.letters_known(), "learned");
+                    tracing::info!(
+                        banners = learned,
+                        letters = reader.letters_known(),
+                        "learned"
+                    );
                     if let Some(gained) = store.push_glyphs(reader.atlas()) {
                         tracing::info!(gained, "glyphs given to the server");
                     }
@@ -357,7 +362,11 @@ fn handle(
                 // this client is missing, so it is sent the picture instead.
                 let unfiled = reader.take_unfiled();
                 if let Some(gained) = store.push_banners(&unfiled) {
-                    tracing::info!(banners = unfiled.len(), gained, "banners given to the server");
+                    tracing::info!(
+                        banners = unfiled.len(),
+                        gained,
+                        "banners given to the server"
+                    );
                 }
                 match store.draft(cfg, &lobby, me) {
                     Ok(draft) => drop(tx.send(Report::Lobby(Box::new(draft)))),
@@ -403,6 +412,11 @@ fn look(
         if reader.saw_menu() {
             from_file.clear();
             seated.clear();
+            // The banners in hand belong to a draft that is over, and the next thing to
+            // name a banner will be the next draft's battlelobby. Kept, they would be
+            // filed under whoever turns up in that slot next time, which is how a shape
+            // gets learned as the wrong letter and never unlearned.
+            reader.forget();
         }
         return;
     };

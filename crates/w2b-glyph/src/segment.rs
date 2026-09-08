@@ -166,7 +166,13 @@ pub fn fit_baseline(found: &[Blob], tolerance: f32) -> Option<Baseline> {
         order.truncate(MOST_CANDIDATES);
     }
 
-    let mut best = (0usize, Baseline { slope: 0.0, intercept: 0.0 });
+    let mut best = (
+        0usize,
+        Baseline {
+            slope: 0.0,
+            intercept: 0.0,
+        },
+    );
 
     for (n, &i) in order.iter().enumerate() {
         for &j in &order[n + 1..] {

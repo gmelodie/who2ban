@@ -214,6 +214,7 @@ pub async fn post_banners(
     Json(banners): Json<Vec<BannerBody>>,
 ) -> Reply<Learned> {
     let mut gained = 0;
+    let mut kept = 0;
     for banner in &banners {
         let image = match image::load_from_memory_with_format(&banner.png, image::ImageFormat::Png)
         {
@@ -224,16 +225,48 @@ pub async fn post_banners(
                 continue;
             }
         };
+        // Kept before it is digested, and kept whether or not the digesting works. The
+        // pool being unable to cut it up is precisely why the picture is worth having.
+        match app.keep_banner(&banner.name, &banner.png) {
+            Ok(file) => {
+                kept += 1;
+                tracing::debug!(name = %banner.name, %file, "banner kept");
+            }
+            Err(e) => tracing::warn!(name = %banner.name, error = %e, "banner would not be kept"),
+        }
         let (w, h) = (image.width() as usize, image.height() as usize);
         gained += app.digest(&image.into_raw(), w, h, &banner.name)?;
     }
     let (letters, examples) = app.atlas_size();
-    if gained > 0 {
-        tracing::info!(gained, letters, examples, banners = banners.len(), "banners digested");
-    }
+    tracing::info!(
+        gained,
+        kept,
+        letters,
+        examples,
+        banners = banners.len(),
+        "banners digested"
+    );
     Ok(Json(Learned {
         gained,
         letters,
         examples,
     }))
+}
+
+/// The banners this server has kept, newest first, so they can be fetched and looked at
+/// from wherever the reader is being worked on rather than only from the box they landed
+/// on. The pool runs on one machine and the segmenter is fixed on another.
+pub async fn list_banners(State(app): State<Arc<App>>) -> Json<Vec<crate::state::Kept>> {
+    Json(app.kept_banners())
+}
+
+/// One kept banner, as the PNG that arrived.
+pub async fn get_banner(
+    State(app): State<Arc<App>>,
+    axum::extract::Path(file): axum::extract::Path<String>,
+) -> Response {
+    match app.kept_banner(&file) {
+        Some(png) => ([(axum::http::header::CONTENT_TYPE, "image/png")], png).into_response(),
+        None => (StatusCode::NOT_FOUND, "no such banner").into_response(),
+    }
 }

@@ -5,6 +5,7 @@
 /// image itself. The unit id is what `MatchPlayer::hero_id` carries: `HeroCrusader`
 /// whatever language the client that saved the replay was set to.
 #[allow(clippy::type_complexity)]
+#[rustfmt::skip]
 static PORTRAITS: &[(&str, &str, &str, &[u8])] = &[
     ("HeroAbathur", "Abathur", "abathur", include_bytes!("../assets/heroes/abathur.png")),
     ("HeroAlarak", "Alarak", "alarak", include_bytes!("../assets/heroes/alarak.png")),

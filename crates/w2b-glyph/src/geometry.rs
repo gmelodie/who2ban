@@ -25,6 +25,7 @@ pub struct Share {
 /// The name banners, generously drawn: a box that clips a name loses the letters at its
 /// end, and a box with scenery in it loses nothing, because what is not on the baseline
 /// is discarded anyway.
+#[rustfmt::skip]
 pub const BANNERS: [(Seat, Share); 10] = [
     (Seat { right_hand: false, row: 0 }, Share { x0: 0.0000, y0: 0.1481, x1: 0.1146, y1: 0.2477 }),
     (Seat { right_hand: false, row: 1 }, Share { x0: 0.0365, y0: 0.3056, x1: 0.1719, y1: 0.4074 }),
@@ -83,7 +84,10 @@ mod tests {
     fn every_box_lands_inside_the_window() {
         for (w, h) in [(3840, 2160), (2560, 1440), (1920, 1080), (1280, 720)] {
             for (seat, (x, y, bw, bh)) in banners(w, h) {
-                assert!(x + bw <= w && y + bh <= h, "{seat:?} {x} {y} {bw} {bh} in {w}x{h}");
+                assert!(
+                    x + bw <= w && y + bh <= h,
+                    "{seat:?} {x} {y} {bw} {bh} in {w}x{h}"
+                );
                 assert!(bw > 20 && bh > 20, "{seat:?} degenerate at {w}x{h}");
             }
         }

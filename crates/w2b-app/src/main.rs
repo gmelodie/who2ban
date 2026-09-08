@@ -192,9 +192,10 @@ impl App {
                 };
                 (format!("last game · {}{how}", recap.map), color)
             }
-            (Some(draft), None) => {
-                (format!("in a lobby · {}", App::roster(draft)), theme::YELLOW)
-            }
+            (Some(draft), None) => (
+                format!("in a lobby · {}", App::roster(draft)),
+                theme::YELLOW,
+            ),
             (None, _) => ("searching for a game".to_string(), theme::BLUE),
         }
     }
@@ -696,9 +697,23 @@ impl App {
                 Some(_) => {
                     let enemies: Vec<&DraftPlayer> = draft.enemies().collect();
                     let allies: Vec<&DraftPlayer> = draft.allies().collect();
-                    self.draw_group(ui, Some("Enemies"), theme::Side::Enemy, &enemies, edits, fixes);
+                    self.draw_group(
+                        ui,
+                        Some("Enemies"),
+                        theme::Side::Enemy,
+                        &enemies,
+                        edits,
+                        fixes,
+                    );
                     ui.add_space(14.0);
-                    self.draw_group(ui, Some("Your team"), theme::Side::Ally, &allies, edits, fixes);
+                    self.draw_group(
+                        ui,
+                        Some("Your team"),
+                        theme::Side::Ally,
+                        &allies,
+                        edits,
+                        fixes,
+                    );
                 }
             }
         });
@@ -835,7 +850,7 @@ impl App {
                         let open_id = egui::Id::new(("correcting", player.slot));
                         let open = ui.data(|d| d.get_temp::<bool>(open_id).unwrap_or(false));
                         if ui
-                            .small_button("\u{270e}")
+                            .small_button("\u{270f}")
                             .on_hover_text("wrong name? put it right, and teach the reader")
                             .clicked()
                         {
@@ -1138,7 +1153,10 @@ mod tests {
 
     #[test]
     fn a_lobby_of_strangers_says_so_rather_than_counting_to_nought() {
-        let view = draft(Some(0), vec![seat("me#1", false, 9), seat("them#1", true, 0)]);
+        let view = draft(
+            Some(0),
+            vec![seat("me#1", false, 9), seat("them#1", true, 0)],
+        );
         let line = App::roster(&view);
         assert!(line.contains("none seen before"), "{line}");
     }
