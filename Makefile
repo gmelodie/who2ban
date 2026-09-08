@@ -3,6 +3,7 @@
 
 # The console on your own machine, reached over a Cloudflare tunnel.
 up: .env
+	@chmod 600 .env
 	docker compose up -d --build
 	@echo "https://$$(grep -E '^DOMAIN=' .env | cut -d= -f2)"
 
@@ -15,8 +16,12 @@ logs:
 app-logs:
 	docker compose logs -f --tail 100 app
 
+# Holds the login and the tunnel token, which is a key to the hostname itself and not
+# only to this app. Written readable by nobody else, because the default umask on a
+# shared machine is not.
 .env:
 	@cp .env.example .env
+	@chmod 600 .env
 	@echo "wrote .env from .env.example. Fill it in, then run make again."
 	@false
 

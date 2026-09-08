@@ -5,6 +5,18 @@ services:
     build: .
     restart: unless-stopped
     expose: ["8731"]
+    # The image already drops to an unprivileged user; these say that nothing inside can
+    # climb back out of it. The program reads the network and writes one folder, so it
+    # needs no capabilities at all and no writable filesystem beyond its volume.
+    read_only: true
+    tmpfs: ["/tmp"]
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    # Decoding a picture somebody sent is the one thing here that can want real memory,
+    # and `restart: unless-stopped` would turn an exhausted host into a loop. Bounded, an
+    # overlarge request kills the request; unbounded, it kills the machine.
+    mem_limit: 1g
+    pids_limit: 256
     environment:
       RUST_LOG: ${RUST_LOG:-w2b_web=info,w2b_core=info}
       BASIC_USER: ${BASIC_USER:?set BASIC_USER in .env}
@@ -17,6 +29,9 @@ services:
     image: cloudflare/cloudflared:latest
     restart: unless-stopped
     depends_on: [app]
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 256m
     command: tunnel --no-autoupdate run --token ${TUNNEL_TOKEN:?set TUNNEL_TOKEN in .env}
 
 volumes:
