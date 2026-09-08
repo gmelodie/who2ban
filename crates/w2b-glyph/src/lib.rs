@@ -71,6 +71,21 @@ const MAX_GLYPH_DISTANCE: f32 = 0.30;
 /// And a shape that fits two letters about equally is not recognised either.
 const MIN_GLYPH_MARGIN: f32 = 0.02;
 
+/// The share of a banner's letters that may be read as something other than the name it
+/// is about to be filed under, before the filing is refused.
+///
+/// The count of shapes is not proof that a banner says what it is being told it says.
+/// The draft screen writes a Real ID friend's real name where their battletag would go -
+/// `Gabriel Vargas` on the banner, `Varguitos` in the battlelobby - and the count is all
+/// that stands between that and nine shapes filed under nine wrong letters, pushed to a
+/// shared pool, never unlearned. Two names of the same length would sail through.
+///
+/// So the atlas is asked what it already makes of the banner. Letters it cannot place
+/// say nothing either way, which is what keeps a thin atlas learning: on a banner it
+/// reads as nothing but holes there is no contradiction and the filing goes ahead. A
+/// banner it reads confidently as a different name is refused.
+const MOST_CONTRADICTED: f32 = 0.34;
+
 /// The letter that stands for one the atlas could not place.
 pub use name::UNREAD;
 
@@ -225,10 +240,36 @@ pub fn learn_at(
     if letters.len() != wanted.len() {
         return false;
     }
-    for (shape, letter) in shapes(&letters, angle).into_iter().zip(wanted) {
+    let shapes = shapes(&letters, angle);
+    if contradicted(&shapes, &wanted, atlas) {
+        return false;
+    }
+    for (shape, letter) in shapes.into_iter().zip(wanted) {
         if let Some(glyph) = shape {
             atlas.learn(letter, &glyph);
         }
     }
     true
+}
+
+/// Whether the atlas already reads this banner as a different name than the one it is
+/// being filed under. Only the letters it places count: the shapes come in the same
+/// order and the same number as the letters, so they line up one for one and no
+/// alignment has to be guessed at.
+fn contradicted(shapes: &[Option<Glyph>], wanted: &[char], atlas: &Atlas) -> bool {
+    let wrong = shapes
+        .iter()
+        .zip(wanted)
+        .filter(|(shape, letter)| {
+            shape
+                .as_ref()
+                .and_then(|g| atlas.classify(g))
+                .filter(|v| {
+                    v.distance <= MAX_GLYPH_DISTANCE
+                        && (v.runner_up - v.distance) >= MIN_GLYPH_MARGIN
+                })
+                .is_some_and(|v| !v.letter.eq_ignore_ascii_case(letter))
+        })
+        .count();
+    wrong as f32 > MOST_CONTRADICTED * wanted.len() as f32
 }

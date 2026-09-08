@@ -331,3 +331,39 @@ fn a_read_too_short_to_be_evidence_names_nobody() {
     assert!(w2b_glyph::name::identify("geemelodie", &pool).is_some());
     assert!(w2b_glyph::name::identify("geem?lodie", &pool).is_some());
 }
+
+/// The draft screen writes a Real ID friend's real name where the battletag would go, so
+/// the battlelobby's name for that seat and the name drawn on the banner are different
+/// names. When they are also the same length the shape count says nothing, and filing
+/// would teach every letter of one name the shape of another - into a pool that is
+/// shared and never unlearned.
+#[test]
+fn a_banner_the_atlas_reads_as_someone_else_is_not_filed_over() {
+    let mut atlas = Atlas::new();
+    for (stem, name) in BANNERS {
+        let (rgb, w, h) = banner(stem);
+        w2b_glyph::learn(&rgb, w, h, name, &mut atlas);
+    }
+    let (stem, drawn) = BANNERS[0];
+    let (rgb, w, h) = banner(stem);
+    // A different name of exactly the same length, which is the case the count misses.
+    let lie: String = drawn
+        .chars()
+        .map(|c| if c.is_ascii_alphabetic() { 'q' } else { c })
+        .collect();
+    assert_eq!(lie.chars().count(), drawn.chars().count());
+    assert!(
+        !w2b_glyph::learn(&rgb, w, h, &lie, &mut atlas),
+        "filed {drawn:?} under {lie:?}"
+    );
+}
+
+/// And the guard must not stop a thin atlas learning, which is the whole point of
+/// filing: a banner it can make nothing of contradicts nothing.
+#[test]
+fn a_banner_the_atlas_cannot_read_is_still_filed() {
+    let mut atlas = Atlas::new();
+    let (stem, name) = BANNERS[0];
+    let (rgb, w, h) = banner(stem);
+    assert!(w2b_glyph::learn(&rgb, w, h, name, &mut atlas));
+}
