@@ -9,9 +9,16 @@ services:
     # climb back out of it. The program reads the network and writes one folder, so it
     # needs no capabilities at all and no writable filesystem beyond its volume.
     read_only: true
-    tmpfs: ["/tmp"]
+    # Small, and mounted so that nothing dropped in it can be run or gain privilege. A
+    # writable directory is the usual place to put a downloaded thing before running it.
+    tmpfs: ["/tmp:noexec,nosuid,nodev,size=16m"]
     cap_drop: ["ALL"]
     security_opt: ["no-new-privileges:true"]
+    # Said here as well as in the image. The image is where it takes effect; this is so
+    # that a rebuild from an edited Dockerfile cannot quietly start running as root.
+    user: "10001:10001"
+    ulimits:
+      nofile: 1024
     # Decoding a picture somebody sent is the one thing here that can want real memory,
     # and `restart: unless-stopped` would turn an exhausted host into a loop. Bounded, an
     # overlarge request kills the request; unbounded, it kills the machine.
@@ -23,6 +30,11 @@ services:
       BASIC_PASS: ${BASIC_PASS:?set BASIC_PASS in .env}
     volumes:
       - data:/data
+    # Only the network the tunnel reaches it on. `inner` has no route off the machine, so
+    # the program cannot open a connection to anything: it serves what it is asked for and
+    # that is all it can do. Nothing here wants the internet - the server holds a database
+    # and a folder, and every name it resolves is another container.
+    networks: [inner]
 
   # Dials out to Cloudflare, so this machine needs no public address and no open port.
   tunnel:
@@ -32,7 +44,15 @@ services:
     cap_drop: ["ALL"]
     security_opt: ["no-new-privileges:true"]
     mem_limit: 256m
+    # On both: `inner` to reach the app, `edge` to dial Cloudflare. This is the only
+    # container here that is allowed off the machine.
+    networks: [inner, edge]
     command: tunnel --no-autoupdate run --token ${TUNNEL_TOKEN:?set TUNNEL_TOKEN in .env}
+
+networks:
+  inner:
+    internal: true
+  edge:
 
 volumes:
   data:
