@@ -71,6 +71,7 @@ pub fn player_row(
         team,
         enemy,
         note: db.note(battletag)?,
+        toxic: db.toxic_reports(battletag)?,
         games,
         heroes,
     })

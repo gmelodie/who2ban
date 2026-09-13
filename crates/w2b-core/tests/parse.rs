@@ -15,16 +15,16 @@ fn lobby_bytes(region: &[u8; 2], tags: &[&str]) -> Vec<u8> {
 }
 
 const TEN: [&str; 10] = [
-    "Ninlarr#1744",
-    "GhostKnight#1319",
-    "Kadajto#1386",
-    "ZeekeraTron#1789",
-    "slayer#1787",
-    "clevername#11855",
-    "sebaneitor#1407",
-    "ultrapaladin#1786",
-    "erevlydeux#1388",
-    "Balls0fsteel#1239",
+    "Fulano1#1744",
+    "Beltranobom#1319",
+    "Sicrano#1386",
+    "Quartanomes#1789",
+    "quinto#1787",
+    "sextonomes#11855",
+    "setimonome#1407",
+    "oitavoplayer#1786",
+    "nonoplayer#1388",
+    "Decimoplayer#1239",
 ];
 
 #[test]
@@ -33,8 +33,8 @@ fn reads_ten_battletags_in_slot_order() {
 
     assert_eq!(lobby.region, 2);
     assert_eq!(lobby.players.len(), 10);
-    assert_eq!(lobby.players[0].battletag, "Ninlarr#1744");
-    assert_eq!(lobby.players[9].battletag, "Balls0fsteel#1239");
+    assert_eq!(lobby.players[0].battletag, "Fulano1#1744");
+    assert_eq!(lobby.players[9].battletag, "Decimoplayer#1239");
     assert!(lobby.players[..5].iter().all(|p| p.team == 0));
     assert!(lobby.players[5..].iter().all(|p| p.team == 1));
     assert_eq!(lobby.players[7].slot, 7);
@@ -64,7 +64,7 @@ fn a_stray_length_byte_does_not_shift_a_battletag() {
         .map(|p| p.battletag)
         .collect();
     assert_eq!(tags.len(), 10);
-    assert_eq!(tags[3], "ZeekeraTron#1789");
+    assert_eq!(tags[3], "Quartanomes#1789");
     assert!(tags.iter().all(|tag| !tag.starts_with('!')));
 }
 
@@ -90,7 +90,7 @@ fn rejects_a_lobby_it_cannot_split_in_two() {
 fn ignores_strings_that_only_look_like_battletags() {
     let mut noise = lobby_bytes(b"US", &TEN);
     for junk in [
-        "T:52495772#804",
+        "T:10000001#804",
         "blizzmaps#1",
         "a#12",
         "toolongdiscriminator#123456789",

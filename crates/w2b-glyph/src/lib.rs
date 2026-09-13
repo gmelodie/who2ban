@@ -76,7 +76,7 @@ const MIN_GLYPH_MARGIN: f32 = 0.02;
 ///
 /// The count of shapes is not proof that a banner says what it is being told it says.
 /// The draft screen writes a Real ID friend's real name where their battletag would go -
-/// `Gabriel Vargas` on the banner, `Varguitos` in the battlelobby - and the count is all
+/// `Fulano de Tal` on the banner, `Fulano` in the battlelobby - and the count is all
 /// that stands between that and nine shapes filed under nine wrong letters, pushed to a
 /// shared pool, never unlearned. Two names of the same length would sail through.
 ///

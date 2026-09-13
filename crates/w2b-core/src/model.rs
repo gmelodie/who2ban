@@ -51,6 +51,9 @@ pub struct DraftPlayer {
     /// Absent from a server too old to send one, which is not the same as an empty note.
     #[serde(default)]
     pub note: PlayerNote,
+    /// Times this player has been reported toxic, by everyone behind the one login.
+    #[serde(default)]
+    pub toxic: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

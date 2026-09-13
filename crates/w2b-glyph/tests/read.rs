@@ -1,22 +1,21 @@
 //! Everything here runs against banners cut from one real draft: a 3840 by 2160 capture
-//! of a Storm League draft, five names on the blue side and five on the red.
+//! of a Storm League draft. Eight of the ten seats are kept; the two the game drew a Real
+//! ID friend's real name on are not in the repository, because the pixels are the name.
 
 use std::path::PathBuf;
 
 use w2b_glyph::{Atlas, name};
 
 /// The ten seats of that draft, as the battlelobby spelled them at load.
-const BANNERS: [(&str, &str); 10] = [
-    ("sagelion", "SageLion"),
-    ("nickstar28", "NickStar28"),
-    ("noheroe", "noheroe"),
-    ("geemelodie", "geemelodie"),
-    ("eumesmo", "eumesmo"),
-    ("judicante", "Judicante"),
-    ("ajiwajim2", "AJIWAJIM2"),
-    ("trollmllaman", "Trollmllaman"),
-    ("matheusdasilva", "Matheus da silva"),
-    ("gabrielvargas", "Gabriel Vargas"),
+const BANNERS: [(&str, &str); 8] = [
+    ("banner-01", "SageLion"),
+    ("banner-02", "NickStar28"),
+    ("banner-03", "noheroe"),
+    ("banner-04", "geemelodie"),
+    ("banner-05", "eumesmo"),
+    ("banner-06", "Judicante"),
+    ("banner-07", "AJIWAJIM2"),
+    ("banner-08", "Trollmllaman"),
 ];
 
 fn banner(stem: &str) -> (Vec<u8>, usize, usize) {
@@ -50,10 +49,10 @@ fn a_banner_is_cut_into_its_letters() {
             exact += 1;
         }
     }
-    assert!(exact >= 9, "only {exact} of 10 banners cut cleanly");
+    assert!(exact >= 7, "only {exact} of 8 banners cut cleanly");
 }
 
-/// The real test of the shapes: learn nine names, then read the tenth, which shares no
+/// The real test of the shapes: learn seven names, then read the eighth, which shares no
 /// single drawn letter with what was learned.
 #[test]
 fn a_name_is_read_from_the_shapes_of_the_others() {
@@ -87,16 +86,20 @@ fn a_name_is_read_from_the_shapes_of_the_others() {
     }
     assert!(total > 20, "only {total} letters were read at all");
     let share = correct as f32 / total as f32;
-    assert!(share >= 0.88, "letters read correctly: {correct}/{total}");
+    // The bar sits at the eight banners this repository keeps. It was 0.88 when the two
+    // banners drawn with a friend's real name were still here: they carried the only `v`,
+    // `b`, `G` and `V` in the set, so without them more letters come back unread or wrong.
+    // This is a regression guard at the present baseline of 33/41, not a quality target.
+    assert!(share >= 0.78, "letters read correctly: {correct}/{total}");
 }
 
 #[test]
 fn a_read_that_is_nearly_right_still_finds_the_player() {
     let pool = vec![
         ("geemelodie".to_string(), "geemelodie#1711".to_string()),
-        ("eumesmo".to_string(), "eumesmo#1338".to_string()),
-        ("Quaresma".to_string(), "Quaresma#2211".to_string()),
-        ("gameleque".to_string(), "gameleque#1102".to_string()),
+        ("outroeu".to_string(), "outroeu#1338".to_string()),
+        ("Beltrano".to_string(), "Beltrano#2211".to_string()),
+        ("sicrano".to_string(), "sicrano#1102".to_string()),
     ];
     // One letter misread out of ten, which is what a thin atlas does.
     let found = name::identify("geemelodle", &pool).expect("a near miss is still the player");
@@ -107,9 +110,9 @@ fn a_read_that_is_nearly_right_still_finds_the_player() {
 #[test]
 fn a_read_too_poor_to_place_names_nobody() {
     let pool = vec![
-        ("ATARI".to_string(), "ATARI#1234".to_string()),
-        ("Arthas".to_string(), "Arthas#4321".to_string()),
-        ("Chami".to_string(), "Chami#1000".to_string()),
+        ("ALTAI".to_string(), "ALTAI#1234".to_string()),
+        ("Aurora".to_string(), "Aurora#4321".to_string()),
+        ("Chavi".to_string(), "Chavi#1000".to_string()),
     ];
     // Rubbish out of the segmenter, and a read of nothing but unplaced letters. Neither
     // may be rounded to whoever happens to be closest.
@@ -133,7 +136,7 @@ fn two_players_who_fit_equally_well_name_neither() {
 #[test]
 fn a_banner_whose_letters_do_not_add_up_teaches_nothing() {
     let mut atlas = Atlas::new();
-    let (rgb, w, h) = banner("geemelodie");
+    let (rgb, w, h) = banner("banner-04");
     // The banner says ten letters; claiming it says three must not file nine wrong.
     assert!(!w2b_glyph::learn(&rgb, w, h, "abc", &mut atlas));
     assert_eq!(atlas.examples(), 0);
@@ -145,12 +148,12 @@ fn a_poor_read_that_can_only_be_one_player_still_names_them() {
     // nobody else in the pool is anywhere near. Judging this on the score alone threw
     // away answers that were both correct and unambiguous.
     let pool = vec![
-        ("Matheusdasilva".to_string(), "Matheusdasilva#1".to_string()),
-        ("HeroesdelaLU".to_string(), "HeroesdelaLU#2".to_string()),
-        ("Elvendaval01".to_string(), "Elvendaval01#3".to_string()),
+        ("Sicranodasilva".to_string(), "Sicranodasilva#1".to_string()),
+        ("Beltranodela".to_string(), "Beltranodela#2".to_string()),
+        ("Fulanodeltal".to_string(), "Fulanodeltal#3".to_string()),
     ];
-    let found = name::identify("??t?e?sd?s?l??", &pool).expect("only one player fits");
-    assert_eq!(found.battletag, "Matheusdasilva#1");
+    let found = name::identify("??c?a?od?s?l??", &pool).expect("only one player fits");
+    assert_eq!(found.battletag, "Sicranodasilva#1");
     assert!(
         found.score > name::MIN_MARGIN,
         "the score is meant to be poor here"
@@ -213,7 +216,7 @@ fn a_dimmed_banner_is_still_read() {
 /// ladder just made readable.
 #[test]
 fn a_dimmed_banner_is_still_learned_from() {
-    let (rgb, w, h) = banner("geemelodie");
+    let (rgb, w, h) = banner("banner-04");
     let dimmed: Vec<u8> = rgb.into_iter().map(|v| (v as f32 * 0.66) as u8).collect();
 
     let mut atlas = Atlas::new();
@@ -226,7 +229,7 @@ fn a_dimmed_banner_is_still_learned_from() {
     // cost a shape or two the renderer can no longer cut cleanly, and that is the price
     // of filing a seat which at the lit cutoff alone taught nothing whatsoever.
     let mut lit = Atlas::new();
-    let (rgb, w, h) = banner("geemelodie");
+    let (rgb, w, h) = banner("banner-04");
     assert!(w2b_glyph::learn(&rgb, w, h, "geemelodie", &mut lit));
     assert!(
         atlas.examples() * 5 >= lit.examples() * 4,
@@ -245,7 +248,7 @@ fn a_lit_banner_reads_off_the_first_rung() {
         let (rgb, w, h) = banner(stem);
         w2b_glyph::learn(&rgb, w, h, truth, &mut atlas);
     }
-    let (rgb, w, h) = banner("geemelodie");
+    let (rgb, w, h) = banner("banner-04");
     let first = w2b_glyph::read_ladder(&rgb, w, h, &atlas)
         .into_iter()
         .next()
@@ -266,11 +269,11 @@ fn a_lit_banner_reads_off_the_first_rung() {
 #[test]
 fn an_absorbed_atlas_keeps_everything_both_held() {
     let mut shipped = Atlas::new();
-    let (rgb, w, h) = banner("geemelodie");
+    let (rgb, w, h) = banner("banner-04");
     assert!(w2b_glyph::learn(&rgb, w, h, "geemelodie", &mut shipped));
 
     let mut learned = Atlas::new();
-    let (rgb, w, h) = banner("eumesmo");
+    let (rgb, w, h) = banner("banner-05");
     assert!(w2b_glyph::learn(&rgb, w, h, "eumesmo", &mut learned));
 
     let (before, letters) = (learned.examples(), learned.letters());
@@ -297,7 +300,7 @@ fn an_absorbed_atlas_keeps_everything_both_held() {
 #[test]
 fn an_atlas_built_from_default_can_still_learn() {
     let mut atlas = Atlas::default();
-    let (rgb, w, h) = banner("geemelodie");
+    let (rgb, w, h) = banner("banner-04");
     assert!(w2b_glyph::learn(&rgb, w, h, "geemelodie", &mut atlas));
     assert!(atlas.examples() > 0, "a default atlas learned nothing");
 

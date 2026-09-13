@@ -3503,6 +3503,7 @@ dependencies = [
  "w2b-glyph",
  "w2b-parse",
  "w2b-shot",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

@@ -65,11 +65,17 @@ CREATE TABLE IF NOT EXISTS hero_verdicts(
     updated_at INTEGER NOT NULL,
     PRIMARY KEY(battletag, hero)
 );
+
+CREATE TABLE IF NOT EXISTS toxic_reports(
+    battletag  TEXT PRIMARY KEY COLLATE NOCASE,
+    count      INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL
+);
 "#;
 
 /// A database outlives every version of this program, so a step that cannot keep the
 /// rows copies the file aside before it touches anything.
-const SCHEMA_VERSION: i64 = 7;
+const SCHEMA_VERSION: i64 = 8;
 
 /// The shape before 3 held no fingerprint and no player handle, neither of which can be
 /// worked out from what it stored. 4 reshapes in place: it needs only the player rows,
@@ -428,6 +434,19 @@ impl Db {
             )
             .optional()?;
         Ok(found.unwrap_or_default())
+    }
+
+    /// Times a player has been reported toxic, which is none until somebody reports them.
+    pub fn toxic_reports(&self, battletag: &str) -> Result<u32> {
+        let conn = self.lock();
+        let found = conn
+            .query_row(
+                "SELECT count FROM toxic_reports WHERE battletag = ?1",
+                [battletag],
+                |r| r.get::<_, i64>(0),
+            )
+            .optional()?;
+        Ok(found.unwrap_or(0) as u32)
     }
 
     /// A note that says nothing and judges nobody is not stored, so clearing one removes it.

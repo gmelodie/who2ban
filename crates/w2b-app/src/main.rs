@@ -116,7 +116,7 @@ impl App {
         }
     }
 
-    fn drain(&mut self) {
+    fn drain(&mut self, ctx: &egui::Context) {
         let reports: Vec<Report> = match &self.worker {
             Some(worker) => worker.reports.try_iter().collect(),
             None => Vec::new(),
@@ -136,9 +136,12 @@ impl App {
                     self.progress = (done < total).then_some((done, total, failed));
                 }
                 Report::Matches(count) => self.matches = count,
-                Report::Lobby(draft) => {
+                Report::Lobby { draft, fresh } => {
                     self.recap = None;
                     self.draft = Some(*draft);
+                    if fresh {
+                        call_attention(ctx);
+                    }
                 }
                 Report::Played {
                     battletags,
@@ -403,6 +406,20 @@ fn form(ui: &mut egui::Ui, width: f32, add: impl FnOnce(&mut egui::Ui)) {
     });
 }
 
+/// Beep, not focus: this window over the game would hide the draft from the screen reader.
+fn call_attention(ctx: &egui::Context) {
+    ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(
+        egui::UserAttentionType::Critical,
+    ));
+    #[cfg(windows)]
+    // SAFETY: no pointers, and a failed beep is only silence.
+    unsafe {
+        use windows_sys::Win32::System::Diagnostics::Debug::MessageBeep;
+        use windows_sys::Win32::UI::WindowsAndMessaging::MB_ICONEXCLAMATION;
+        MessageBeep(MB_ICONEXCLAMATION);
+    }
+}
+
 /// Enter in a field is the same as the button, which is what a login screen owes anyone.
 fn entered(field: egui::Response) -> bool {
     field.lost_focus() && field.ctx.input(|i| i.key_pressed(egui::Key::Enter))
@@ -410,7 +427,7 @@ fn entered(field: egui::Response) -> bool {
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        self.drain();
+        self.drain(ui.ctx());
         ui.ctx()
             .request_repaint_after(std::time::Duration::from_millis(250));
 
@@ -1210,6 +1227,7 @@ mod tests {
             enemy,
             games,
             note: PlayerNote::default(),
+            toxic: 0,
             heroes: vec![HeroRow {
                 hero: "Raynor".into(),
                 games,

@@ -11,13 +11,14 @@
 
 use std::ffi::c_void;
 
-use windows_sys::Win32::Foundation::{HWND, LPARAM, RECT};
+use windows_sys::Win32::Foundation::{HWND, LPARAM, POINT, RECT};
 use windows_sys::Win32::Graphics::Gdi::{
-    BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BitBlt, CAPTUREBLT, CreateCompatibleDC, CreateDIBSection,
-    DIB_RGB_COLORS, DeleteDC, DeleteObject, GetDC, HGDIOBJ, ReleaseDC, SRCCOPY, SelectObject,
+    BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BitBlt, CAPTUREBLT, ClientToScreen, CreateCompatibleDC,
+    CreateDIBSection, DIB_RGB_COLORS, DeleteDC, DeleteObject, GetDC, HGDIOBJ, ReleaseDC, SRCCOPY,
+    SelectObject,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetSystemMetrics, GetWindowRect, GetWindowTextW, IsWindowVisible,
+    EnumWindows, GetClientRect, GetSystemMetrics, GetWindowTextW, IsWindowVisible,
     SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
 };
 
@@ -186,15 +187,27 @@ unsafe extern "system" fn consider(window: HWND, carried: LPARAM) -> i32 {
         return KEEP_LOOKING;
     }
 
+    // The area the game draws in, not the window. A windowed client's window rect also
+    // holds its title bar, its borders and the invisible resize margins around them, and
+    // every banner box is a share of the drawn area, so measured off the window rect they
+    // all land off target. Borderless and fullscreen have no frame, so the two agree there.
     let mut area = RECT {
         left: 0,
         top: 0,
         right: 0,
         bottom: 0,
     };
-    if unsafe { GetWindowRect(window, &mut area) } == 0 {
+    if unsafe { GetClientRect(window, &mut area) } == 0 {
         return KEEP_LOOKING;
     }
+    let mut corner = POINT { x: 0, y: 0 };
+    if unsafe { ClientToScreen(window, &mut corner) } == 0 {
+        return KEEP_LOOKING;
+    }
+    area.left += corner.x;
+    area.top += corner.y;
+    area.right += corner.x;
+    area.bottom += corner.y;
     let (w, h) = (area.right - area.left, area.bottom - area.top);
     if w < 200 || h < 200 {
         return KEEP_LOOKING;

@@ -198,7 +198,7 @@ fn candidates(tags: &[String]) -> Vec<(String, String)> {
 /// Once a seat has a hero on it the card is retitled: the hero's name goes on top in
 /// capitals, the battletag drops to a small line beneath, and the banner box holds both.
 /// The big line is the one that reads, and a pool of thousands holds players called
-/// Alarak, Cassia and Murky, so a seat on Alarak was handed `Alarak#11471`'s card. A tie
+/// Alarak, Cassia and Murky, so a seat on Murky was handed `Murky#10001`'s card. A tie
 /// goes to the hero: a player who really is called that cannot be told from the title by
 /// its letters, and a blank seat is better than a stranger's card.
 fn names_a_hero(reading: &str, score: f32) -> bool {
@@ -920,9 +920,9 @@ mod tests {
     fn pool() -> Vec<String> {
         [
             "geemelodie#1711",
-            "SageLion#115872",
-            "eumesmo#1338",
-            "Caive#1258",
+            "Vigilante#115872",
+            "outroeu#1338",
+            "Beltrano#1258",
         ]
         .iter()
         .map(|s| s.to_string())
@@ -973,8 +973,8 @@ mod tests {
     fn a_seat_read_once_survives_a_look_that_misses_it() {
         let mut r = reader();
         r.keep_read(vec![(seat(false, 0), "geemelodie".into(), (10, 10))]);
-        r.keep_read(vec![(seat(false, 1), "SageLion".into(), (8, 8))]);
-        r.keep_read(vec![(seat(false, 2), "Caive".into(), (5, 5))]);
+        r.keep_read(vec![(seat(false, 1), "Vigilante".into(), (8, 8))]);
+        r.keep_read(vec![(seat(false, 2), "Beltrano".into(), (5, 5))]);
         assert_eq!(r.held.len(), 3);
         // The one read three looks ago is still standing, under the slot it was cut from.
         assert_eq!(r.held[0].0, 0);
@@ -986,10 +986,10 @@ mod tests {
     #[test]
     fn a_dimmer_reading_does_not_displace_a_clearer_one() {
         let mut r = reader();
-        r.keep_read(vec![(seat(true, 2), "SageLion".into(), (8, 8))]);
+        r.keep_read(vec![(seat(true, 2), "Vigilante".into(), (8, 8))]);
         r.keep_read(vec![(seat(true, 2), "Sagel_on".into(), (2, 8))]);
         assert_eq!(r.held.len(), 1);
-        assert_eq!(r.held[0].2, "SageLion");
+        assert_eq!(r.held[0].2, "Vigilante");
     }
 
     /// And a clearer reading does displace a dimmer one, so a seat misread while it was
@@ -998,8 +998,8 @@ mod tests {
     fn a_clearer_reading_displaces_a_dimmer_one() {
         let mut r = reader();
         r.keep_read(vec![(seat(true, 2), "Sagel_on".into(), (2, 8))]);
-        r.keep_read(vec![(seat(true, 2), "SageLion".into(), (8, 8))]);
-        assert_eq!(r.held[0].2, "SageLion");
+        r.keep_read(vec![(seat(true, 2), "Vigilante".into(), (8, 8))]);
+        assert_eq!(r.held[0].2, "Vigilante");
     }
 
     /// The reads belong to the draft they were read from. Carried into the next one they
@@ -1062,7 +1062,7 @@ mod tests {
     fn reads_that_match_their_slots_leave_the_filing_alone() {
         let (agreed, clashed) = agreement(
             &[0, 1, 2],
-            &reads([Some("geemelodie#1711"), None, Some("eumesmo#1338")]),
+            &reads([Some("geemelodie#1711"), None, Some("outroeu#1338")]),
             &truth(),
         );
         assert_eq!(clashed, 0);
@@ -1084,7 +1084,7 @@ mod tests {
     fn one_read_in_the_wrong_seat_vetoes_the_lot() {
         let (_, clashed) = agreement(
             &[0, 1, 2],
-            &reads([Some("SageLion#115872"), None, Some("eumesmo#1338")]),
+            &reads([Some("Vigilante#115872"), None, Some("outroeu#1338")]),
             &truth(),
         );
         assert!(clashed > 0);
@@ -1094,7 +1094,8 @@ mod tests {
     /// counting as a clash and throwing the lobby away.
     #[test]
     fn a_slot_the_file_never_named_is_not_a_clash() {
-        let (agreed, clashed) = agreement(&[9], &reads([Some("Caive#1258"), None, None]), &truth());
+        let (agreed, clashed) =
+            agreement(&[9], &reads([Some("Beltrano#1258"), None, None]), &truth());
         assert_eq!((agreed, clashed), (0, 0));
     }
 
@@ -1102,8 +1103,8 @@ mod tests {
     fn a_read_that_is_nearly_right_seats_the_player_it_meant() {
         let reads = vec![
             (seat(false, 0), "geemelodle".to_string()),
-            (seat(true, 1), "SageLion".to_string()),
-            (seat(true, 2), "eumesmo".to_string()),
+            (seat(true, 1), "Vigilante".to_string()),
+            (seat(true, 2), "outroeu".to_string()),
         ];
         let lobby = reader()
             .lobby(&reads, &pool())
@@ -1122,8 +1123,8 @@ mod tests {
     fn seats_that_cannot_be_placed_are_left_empty() {
         let reads = vec![
             (seat(false, 0), "geemelodie".to_string()),
-            (seat(false, 1), "SageLion".to_string()),
-            (seat(false, 2), "eumesmo".to_string()),
+            (seat(false, 1), "Vigilante".to_string()),
+            (seat(false, 2), "outroeu".to_string()),
             (seat(true, 0), "?????".to_string()),
             (seat(true, 1), "xqzvw".to_string()),
         ];
@@ -1163,15 +1164,15 @@ mod tests {
     #[test]
     fn a_friend_the_screen_renames_is_still_seated() {
         let mut r = reader();
-        let reads = vec![(seat(false, 0), "GabrielVargas".to_string())];
+        let reads = vec![(seat(false, 0), "FulanoDeTal".to_string())];
         assert!(
             r.lobby(&reads, &pool()).is_none(),
             "seated before the name was known"
         );
 
-        r.aliases.record("GabrielVargas", "Caive#1258");
+        r.aliases.record("FulanoDeTal", "Beltrano#1258");
         let lobby = r.lobby(&reads, &pool()).expect("the name places the seat");
-        assert_eq!(lobby.players[0].battletag, "Caive#1258");
+        assert_eq!(lobby.players[0].battletag, "Beltrano#1258");
     }
 
     /// The name of a friend who is not in this draft must not seat them in it. Their
@@ -1179,8 +1180,8 @@ mod tests {
     #[test]
     fn a_friend_sitting_this_one_out_takes_no_seat() {
         let mut r = reader();
-        r.aliases.record("GabrielVargas", "Varguitos#11833");
-        let reads = vec![(seat(false, 0), "GabrielVargas".to_string())];
+        r.aliases.record("FulanoDeTal", "Fulano#11833");
+        let reads = vec![(seat(false, 0), "FulanoDeTal".to_string())];
         assert!(
             r.lobby(&reads, &pool()).is_none(),
             "seated an absent player"
@@ -1193,8 +1194,8 @@ mod tests {
         let reads = vec![
             (seat(false, 0), "geemelodie".to_string()),
             (seat(false, 1), "geemelodie".to_string()),
-            (seat(true, 0), "SageLion".to_string()),
-            (seat(true, 1), "eumesmo".to_string()),
+            (seat(true, 0), "Vigilante".to_string()),
+            (seat(true, 1), "outroeu".to_string()),
         ];
         let lobby = reader().lobby(&reads, &pool()).unwrap();
         assert_eq!(lobby.players.len(), 3);
@@ -1205,10 +1206,10 @@ mod tests {
     #[test]
     fn a_hero_titling_a_card_takes_no_players_seat() {
         let mut tags = pool();
-        tags.push("Alarak#11471".to_string());
+        tags.push("Murky#10001".to_string());
         let reads = vec![
             (seat(false, 0), "geemelodie".to_string()),
-            (seat(false, 1), "ALARAK".to_string()),
+            (seat(false, 1), "MURKY".to_string()),
         ];
         let lobby = reader()
             .lobby(&reads, &tags)

@@ -1,6 +1,0 @@
-target/
-dist/
-.git/
-deploy/htpasswd
-.env
-*.db

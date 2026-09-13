@@ -34,7 +34,11 @@ pub enum Report {
         failed: u32,
     },
     Matches(u32),
-    Lobby(Box<Draft>),
+    /// `fresh` marks the first report of a match.
+    Lobby {
+        draft: Box<Draft>,
+        fresh: bool,
+    },
     /// A match just parsed from a replay file, which is how the app learns that the lobby
     /// it is showing has finished playing itself out, and how it ended.
     Played {
@@ -310,7 +314,10 @@ fn correct(
         region: 0,
     };
     match store.draft(cfg, &whole, me) {
-        Ok(draft) => drop(tx.send(Report::Lobby(Box::new(draft)))),
+        Ok(draft) => drop(tx.send(Report::Lobby {
+            draft: Box::new(draft),
+            fresh: false,
+        })),
         Err(e) => drop(tx.send(Report::Failed(e))),
     }
 }
@@ -359,6 +366,7 @@ fn handle(
                 let names: Vec<String> =
                     lobby.players.iter().map(|p| p.battletag.clone()).collect();
                 *from_file = names.clone();
+                let fresh = on_screen.is_empty();
                 // The next draft is a different lobby, so what was read for this one must
                 // not be mistaken for it.
                 on_screen.clear();
@@ -391,7 +399,10 @@ fn handle(
                     );
                 }
                 match store.draft(cfg, &lobby, me) {
-                    Ok(draft) => drop(tx.send(Report::Lobby(Box::new(draft)))),
+                    Ok(draft) => drop(tx.send(Report::Lobby {
+                        draft: Box::new(draft),
+                        fresh,
+                    })),
                     Err(e) => drop(tx.send(Report::Failed(e))),
                 }
             }
@@ -498,7 +509,10 @@ fn look(
             own_side(&mut draft);
             reader.say("seating a draft read from the screen");
             tracing::info!(gained, seats = seated.len(), "draft read from the screen");
-            let _ = tx.send(Report::Lobby(Box::new(draft)));
+            let _ = tx.send(Report::Lobby {
+                draft: Box::new(draft),
+                fresh: gained == seated.len(),
+            });
         }
         Err(e) => drop(tx.send(Report::Failed(e))),
     }
@@ -626,23 +640,23 @@ mod tests {
 
     fn pool() -> Vec<String> {
         vec![
-            "AngeLo#12639".to_string(),
-            "Hogger#15962".to_string(),
-            "anarquista#11551".to_string(),
+            "SiCrano#12639".to_string(),
+            "Terceiro#15962".to_string(),
+            "fulanito#11551".to_string(),
         ]
     }
 
     /// The banner shows a name without its discriminator, so that is what gets typed.
     #[test]
     fn a_name_alone_finds_its_whole_battletag() {
-        assert_eq!(resolve("Hogger", &pool()), "Hogger#15962");
+        assert_eq!(resolve("Terceiro", &pool()), "Terceiro#15962");
     }
 
     /// Nobody matches the case of a name they are reading off a screen.
     #[test]
     fn the_case_typed_does_not_matter() {
-        assert_eq!(resolve("angelo", &pool()), "AngeLo#12639");
-        assert_eq!(resolve("  ANARQUISTA  ", &pool()), "anarquista#11551");
+        assert_eq!(resolve("sicrano", &pool()), "SiCrano#12639");
+        assert_eq!(resolve("  FULANITO  ", &pool()), "fulanito#11551");
     }
 
     /// Someone who types the discriminator has said everything there is to say.
@@ -668,6 +682,7 @@ mod tests {
             heroes: Vec::new(),
             games: 0,
             note: Default::default(),
+            toxic: 0,
         }
     }
 

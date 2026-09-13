@@ -1,5 +1,0 @@
-target/
-*.db
-*.db-journal
-.env
-dist/
